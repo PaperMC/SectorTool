@@ -133,13 +133,13 @@ public final class VerifyWorld {
                         final int chunkX = (i & 31);
                         final int chunkZ = ((i >>> 5) & 31);
 
-                        decompressed.reset();
-
                         for (final MinecraftRegionFileType type : MinecraftRegionFileType.getAll()) {
                             final RegionFile regionFile = byId.get(type.getNewId());
                             if (regionFile == null) {
                                 continue;
                             }
+
+                            decompressed.reset();
 
                             boolean read = false;
                             try {
@@ -161,8 +161,7 @@ public final class VerifyWorld {
                                 final DataInputStream is = outputFile.read(sectorReadScope, chunkX, chunkZ, type.getNewId(), CoordinateIndexedSectorFile.FULL_VALIDATION_FLAGS);
 
                                 if (is == null) {
-                                    // TODO check sectorfile exists but not region
-                                    continue; //throw new IOException("Does not exist on sector file");
+                                    throw new IOException("Does not exist on sector file");
                                 }
 
                                 final byte[] bytes = new byte[decompressed.size()];
