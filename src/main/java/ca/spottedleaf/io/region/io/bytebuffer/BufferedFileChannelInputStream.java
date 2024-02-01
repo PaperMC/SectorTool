@@ -22,7 +22,7 @@ public class BufferedFileChannelInputStream extends ByteBufferInputStream {
 
         // ensure we can fully utilise the buffer
         buffer.limit(buffer.capacity());
-        buffer.position(0);
+        buffer.position(buffer.capacity());
     }
 
     @Override
@@ -47,6 +47,8 @@ public class BufferedFileChannelInputStream extends ByteBufferInputStream {
         current.flip();
 
         this.input.read(current);
+
+        current.flip();
 
         return current;
     }

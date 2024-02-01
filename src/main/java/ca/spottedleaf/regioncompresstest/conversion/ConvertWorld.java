@@ -1,6 +1,6 @@
 package ca.spottedleaf.regioncompresstest.conversion;
 
-import ca.spottedleaf.io.region.CoordinateIndexedSectorFile;
+import ca.spottedleaf.io.region.SectorFile;
 import ca.spottedleaf.io.region.MinecraftRegionFileType;
 import ca.spottedleaf.io.region.SectorFileCompressionType;
 import ca.spottedleaf.io.buffer.BufferChoices;
@@ -79,15 +79,15 @@ public final class ConvertWorld {
 
         final File output = new File(
                 new File(dimDirectory, TARGET_DIRECTORY),
-                CoordinateIndexedSectorFile.getFileName(sectionX, sectionZ)
+                SectorFile.getFileName(sectionX, sectionZ)
         );
 
-        final CoordinateIndexedSectorFile outputFile;
+        final SectorFile outputFile;
         try {
-            outputFile = new CoordinateIndexedSectorFile(
-                    output, sectionX, sectionZ, false, compressionType, unscopedBufferChoices,
+            outputFile = new SectorFile(
+                    output, sectionX, sectionZ, compressionType, unscopedBufferChoices,
                     MinecraftRegionFileType.getTranslationTable(),
-                    false
+                    0
             );
         } catch (final IOException ex) {
             synchronized (System.err) {
@@ -155,7 +155,7 @@ public final class ConvertWorld {
                             }
 
                             try (final BufferChoices writeScope = readScope.scope();) {
-                               final CoordinateIndexedSectorFile.SectorFileOutput output = outputFile.write(
+                               final SectorFile.SectorFileOutput output = outputFile.write(
                                        writeScope, chunkX, chunkZ, type.getNewId(), null, 0
                                );
                                try {

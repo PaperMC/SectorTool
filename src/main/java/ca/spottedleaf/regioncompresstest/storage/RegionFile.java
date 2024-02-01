@@ -50,7 +50,8 @@ public final class RegionFile implements Closeable {
         this.channel = FileChannel.open(file.toPath(), StandardOpenOption.READ);
 
         if (this.channel.size() < (2L * (long)SECTOR_SIZE)) {
-            throw new IOException("Truncated file");
+            System.err.println("Truncated header in file: " + file.getAbsolutePath());
+            return;
         }
 
         try (final BufferChoices scopedBufferChoices = unscopedBufferChoices.scope()) {

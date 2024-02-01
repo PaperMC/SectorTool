@@ -38,3 +38,6 @@ hs_err_pid*
 *.csv
 *.xlsx
 *.png
+
+# Data
+run
