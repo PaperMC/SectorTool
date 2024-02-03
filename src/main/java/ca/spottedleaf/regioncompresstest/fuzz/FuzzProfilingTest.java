@@ -22,10 +22,9 @@ public final class FuzzProfilingTest {
         }
     }
 
-    private static final File TEST_DIR = new File("run");
-    static {
-        TEST_DIR.mkdirs();
-    }
+    public static final String OUTPUT_DIR_PROPERTY = "output";
+
+    private static File TEST_DIR;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SectorFile.class);
 
@@ -169,6 +168,20 @@ public final class FuzzProfilingTest {
     }
 
     public static void run(final String[] args) {
+        final String outputDirPath = System.getProperty(OUTPUT_DIR_PROPERTY);
+        if (outputDirPath == null) {
+            System.err.println("Must specify output directory as as -D" + OUTPUT_DIR_PROPERTY + "=<path>");
+            return;
+        }
+
+        TEST_DIR = new File(outputDirPath);
+        if (!TEST_DIR.exists()) {
+            TEST_DIR.mkdirs();
+        } else if (!TEST_DIR.isDirectory()) {
+            System.err.println("Output directory '" + outputDirPath + "' is not a directory");
+            return;
+        }
+
         doTest(630, 20, 0, 0L, 0);
         doTest(1050, 43245, 1, 0L, FLAGS_ALWAYS_OVERSIZED);
         doTest(1423324, 4234234, 2, 0L, FLAGS_ALWAYS_HAS);
@@ -177,7 +190,7 @@ public final class FuzzProfilingTest {
         doTest(133, 4234, 4, 0L, FLAGS_HAS_OVERSIZED);
 
 
-        for (int i = 128-1; i > (128-1-24); --i) {
+        for (int i = SectorFile.MAX_TYPES-1; i > (SectorFile.MAX_TYPES-1-24); --i) {
             doTest(0, 0, i, 0L, FLAGS_HAS_OVERSIZED);
         }
 

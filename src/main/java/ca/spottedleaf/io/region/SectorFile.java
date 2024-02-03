@@ -25,7 +25,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.IntBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -90,105 +89,73 @@ public final class SectorFile implements Closeable {
     // General assumptions: Type header offsets are at least one sector in size
 
     /*
-     * Note: All multibyte values are Big-Endian
-     * Extension: mcsl (MC Sectors)
-     * External extension: mcsle (MC Sectors External)
-     * Terms:
-     * SectorFile: name of this format
-     * Coordinate-type tuple: (x, z, type), where 0 <= x,z < SECTION_SIZE and 0 <= type < HEADER_SIZE
-     *                        The coordinate-type tuple the identifier to read/write data
-     * Index: Single integer representation of a coordinate. It is local to the SectorFile.
-     *
-     * Format:
-     *
-     * First SECTOR_SIZE*HEADER_SECTORS bytes: An int array indicating the start sector for a type header. The index is determined
-     * externally by the program using SectorFile.
-     *
-     * Type header: int array of SECTION_SIZE^2 elements.
-     *
-     * Type header array element:
-     * Lower 11 bits -> sector length of data (max length: ~1MB @ SECTOR_SIZE=512)
-     * Upper 21 bits -> sector offset in file (max file size: ~1GB @ SECTOR_SIZE=512)
-     *
-     * Data format:
-     * Each datum begins with a data header. The data header critically retains the compression type used to compress
-     * the data, the compressed size, and the data XXHash64 value as well as the header's XXHash64 value, and other
-     * values not listed. The compressed size counts the number of bytes of data that follows the header.
-     *
-     *
-     * Data header format:
-     * First 8 bytes: XXHash64 of the header data
-     * Next 8 bytes: XXHash64 of data
-     * Next 8 bytes: currentTimeMillis value at time of write
-     * Next 4 bytes: compressed data size
-     * Next 2 bytes: encoded index of the x,z parts of the coordinate-type tuple
-     * Next 1 byte: data type's id
-     * Next 1 byte: compression type
-     *
-     * The data header format is designed to allow verification of existing data without the requirement to
-     * process the compressed data. This is why the XXHash64 of the data, the encoded index, the type id, and
-     * compression type are stored. The XXHash64 of the header is additionally included so that the header itself may
-     * be verified.
-     *
-     * Some data may be stored externally due to one of the following reasons:
-     * 1. No sectors are free in the sectorfile to store to
-     * 2. Data+header sector length exceeds max sector length allocatable
-     *
-     * In all cases, the EXTERNAL_ALLOCATION_LOCATION value is stored in the type header to indicate that the data
-     * for a coordinate-type tuple is stored externally - this includes the header and compressed data. There is never
-     * an internal allocation which indicates that data is externally allocated - this is indicated only in the type header.
-     *
-     * The file location is determined by SectorFile#getExternalFileName.
-     *
-     * Usage:
-     *
-     * Construction:
-     * SectorFile supports opening with DSYNC, which is useful for possibly avoiding data corruption. DSYNC option is only
-     * as reliable as the OS and disk hardware combined, so it cannot guarantee that no data corruption can occur if any SectorFile
-     * write operations are interrupted.
-     * However, if the write operations performed by the OS and disk hardware are guaranteed to be ordered (possibly
-     * enforced by opening with DSYNC), then interruptions to SectorFile write operations cannot result in corrupt data -
-     * the write operation will either take effect or it will not.
-     *
-     * SectorFile also supports opening in a read-only mode, which will not perform any writes or truncation to the
-     * underlying file. Additionally, it will not perform any recalculation logic when opened in read-only mode.
-     *
-     * It is required to provide SectorFile with a mapping of type id -> type name. This mapping is used to create
-     * any missing type headers in the file. If a type is used in read() or write() but is not contained in the
-     * mapping, then those calls will raise an exception unless the type header is already allocated in the file.
-     * Note that all headers stored in the file are loaded, whether they have an entry in the mapping - this allows
-     * safe operation of a SectorFile as long as the types being operated on are known.
-     *
-     * Read operations:
-     * SectorFile allows the read() call to optionally check the XXHash64 of the data or external data.
-     * XXHash64 is fast, so it is only recommended to not check the hash for external (larger) files.
-     * The returned stream may be bound to an external file, so it is required that no writes to the same coordinate-type
-     * tuple until the returned stream is closed.
-     *
-     * Additionally, SectorFile allows the read() call to optionally check the XXHash64 of the data or external data.
-     * XXHash64 is fast, so is only recommended to check the hash for the data header and internally stored data. External
-     * data hashes may be slower due to its larger size.
-     *
-     * Write operations:
-     * SectorFile return a raw output stream and a compressed stream. The compressed stream should be used to write any data.
-     * To finish writing data, the close() operation on the compressed stream should be called which will commit the written
-     * data to the SectorFile.
-     * The raw output stream should be only used to invoke freeResources(), which is used to perform cleanup of any temp files.
-     * The freeResources() call must be invoked, while the close() operation is not required.
-     *
-     *
-     * Recalculation logic:
-     * SectorFile supports a header recalculation option when inconsistencies any of the following inconsistencies are detected:
-     * 1. Invalid header data: negative sector offsets, sector offsets exceeding file size, overlapping sector allocations
-     * 2. Invalid data header: XXHash64 mismatch, mismatch of compressed size, mismatch of encoded index, mismatch of the type
-     * 3. Invalid data: XXHash64 mismatch
-     *
-     * The recalculation occurs automatically in response to any found inconsistency. The recalculation logic simply
-     * scans the entire internal file and looks at external files to rebuild the header and the type headers to only
-     * point to data that has no inconsistencies. This logic should not be delegated to external tools or ignored,
-     * as delaying the recalculation logic opens timing windows for real data to be overwritten in the file or externally.
-     * As a result recalculation logic minimizes, but does not eliminate (users still need backups), data loss.
+     * File Header:
+     * First 8-bytes: XXHash64 of entire header data, excluding hash value
+     * Next 42x8 bytes: XXHash64 values for each type header
+     * Next 42x4 bytes: sector offsets of type headers
      */
+    private static final int FILE_HEADER_SECTOR = 0;
+    public static final int MAX_TYPES = 42;
+    private static final int FILE_HEADER_SIZE_BYTES = LONG_SIZE + MAX_TYPES*(LONG_SIZE + INT_SIZE);
+    private static final int FILE_HEADER_TOTAL_SECTORS = (FILE_HEADER_SIZE_BYTES + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT;
+
+    private static final class FileHeader {
+
+        public final long[] xxHash64TypeHeader = new long[MAX_TYPES];
+        public final int[] typeHeaderOffsets = new int[MAX_TYPES];
+
+        public FileHeader() {
+            if (ABSENT_HEADER_XXHASH64 != 0L || ABSENT_TYPE_HEADER_OFFSET != 0) {
+                this.reset();
+            }
+        }
+
+        public void reset() {
+            Arrays.fill(this.xxHash64TypeHeader, ABSENT_HEADER_XXHASH64);
+            Arrays.fill(this.typeHeaderOffsets, ABSENT_TYPE_HEADER_OFFSET);
+        }
+
+        public void write(final ByteBuffer buffer) {
+            final int pos = buffer.position();
+
+            // reserve XXHash64 space
+            buffer.putLong(0L);
+
+            buffer.asLongBuffer().put(0, this.xxHash64TypeHeader);
+            buffer.position(buffer.position() + MAX_TYPES * LONG_SIZE);
+
+            buffer.asIntBuffer().put(0, this.typeHeaderOffsets);
+            buffer.position(buffer.position() + MAX_TYPES * INT_SIZE);
+
+            final long hash = computeHash(buffer, pos);
+
+            buffer.putLong(pos, hash);
+        }
+
+        public static void read(final ByteBuffer buffer, final FileHeader fileHeader) {
+            buffer.duplicate().position(buffer.position() + LONG_SIZE).asLongBuffer().get(0, fileHeader.xxHash64TypeHeader);
+
+            buffer.duplicate().position(buffer.position() + LONG_SIZE + LONG_SIZE * MAX_TYPES)
+                .asIntBuffer().get(0, fileHeader.typeHeaderOffsets);
+
+            buffer.position(buffer.position() + FILE_HEADER_SIZE_BYTES);
+        }
+
+        public static long computeHash(final ByteBuffer buffer, final int offset) {
+            return XXHASH64.hash(buffer, offset + LONG_SIZE, FILE_HEADER_SIZE_BYTES - LONG_SIZE, XXHASH_SEED);
+        }
+
+        public static boolean validate(final ByteBuffer buffer, final int offset) {
+            final long expected = buffer.getLong(offset);
+
+            return expected == computeHash(buffer, offset);
+        }
+
+        public void copyFrom(final FileHeader src) {
+            System.arraycopy(src.xxHash64TypeHeader, 0, this.xxHash64TypeHeader, 0, MAX_TYPES);
+            System.arraycopy(src.typeHeaderOffsets, 0, this.typeHeaderOffsets, 0, MAX_TYPES);
+        }
+    }
 
     private static record DataHeader(
             long xxhash64Header,
@@ -261,24 +228,20 @@ public final class SectorFile implements Closeable {
 
     private static final int MAX_INTERNAL_ALLOCATION_BYTES = SECTOR_SIZE * (1 << SECTOR_LENGTH_BITS);
 
-    private static final int HEADER_SECTOR = 0;
-    private static final int HEADER_SECTORS = 1;
-    private static final int HEADER_SIZE = (HEADER_SECTORS * SECTOR_SIZE) / INT_SIZE; // total number of header values (header sectors are fixed at 1)
-    public static final int MAX_TYPES = HEADER_SIZE;
-
     private static final int TYPE_HEADER_OFFSET_COUNT = SECTION_SIZE * SECTION_SIZE; // total number of offsets per type header
     private static final int TYPE_HEADER_SECTORS = (TYPE_HEADER_OFFSET_COUNT * INT_SIZE) / SECTOR_SIZE; // total number of sectors used per type header
 
     // header location is just raw sector number
     // so, we point to the header itself to indicate absence
-    private static final int ABSENT_HEADER_LOCATION = HEADER_SECTOR;
+    private static final int ABSENT_TYPE_HEADER_OFFSET = FILE_HEADER_SECTOR;
+    private static final long ABSENT_HEADER_XXHASH64 = 0L;
 
     private static int makeLocation(final int sectorOffset, final int sectorLength) {
         return (sectorOffset << SECTOR_LENGTH_BITS) | (sectorLength & ((1 << SECTOR_LENGTH_BITS) - 1));
     }
 
-    // point to header sector when absent, as we know that sector is allocated and will not conflict with any real allocation
-    private static final int ABSENT_LOCATION              = makeLocation(HEADER_SECTOR, 0);
+    // point to file header sector when absent, as we know that sector is allocated and will not conflict with any real allocation
+    private static final int ABSENT_LOCATION              = makeLocation(FILE_HEADER_SECTOR, 0);
     // point to outside the maximum allocatable range for external allocations, which will not conflict with any other
     // data allocation (although, it may conflict with a type header allocation)
     private static final int EXTERNAL_ALLOCATION_LOCATION = makeLocation(MAX_NORMAL_SECTOR_OFFSET + 1, 0);
@@ -313,23 +276,66 @@ public final class SectorFile implements Closeable {
     private final SectorFileCompressionType compressionType;
 
     private static final class TypeHeader {
-        public final int headerDataOffset;
-        public final int[] headerData;
 
-        private TypeHeader(final int headerDataOffset, final int[] headerData) {
-            this.headerDataOffset = headerDataOffset;
-            this.headerData = headerData;
+        public static final int TYPE_HEADER_SIZE_BYTES = TYPE_HEADER_OFFSET_COUNT * INT_SIZE;
+
+        public final int[] locations;
+
+        private TypeHeader() {
+            this.locations = new int[TYPE_HEADER_OFFSET_COUNT];
+            if (ABSENT_LOCATION != 0) {
+                this.reset();
+            }
+        }
+
+        private TypeHeader(final int[] locations) {
+            this.locations = locations;
+            if (locations.length != TYPE_HEADER_OFFSET_COUNT) {
+                throw new IllegalArgumentException();
+            }
+        }
+
+        public void reset() {
+            Arrays.fill(this.locations, ABSENT_LOCATION);
+        }
+
+        public static TypeHeader read(final ByteBuffer buffer) {
+            final int[] locations = new int[TYPE_HEADER_OFFSET_COUNT];
+            buffer.asIntBuffer().get(0, locations, 0, TYPE_HEADER_OFFSET_COUNT);
+
+            return new TypeHeader(locations);
+        }
+
+        public void write(final ByteBuffer buffer) {
+            buffer.asIntBuffer().put(0, this.locations);
+
+            buffer.position(buffer.position() + TYPE_HEADER_SIZE_BYTES);
+        }
+
+        public static long computeHash(final ByteBuffer buffer, final int offset) {
+            return XXHASH64.hash(buffer, offset, TYPE_HEADER_SIZE_BYTES, XXHASH_SEED);
         }
     }
 
     private final Int2ObjectLinkedOpenHashMap<TypeHeader> typeHeaders = new Int2ObjectLinkedOpenHashMap<>();
     private final Int2ObjectMap<String> typeTranslationTable;
+    private final FileHeader fileHeader = new FileHeader();
 
     private void checkReadOnlyHeader(final int type) {
         // we want to error when a type is used which is not mapped, but we can only store into typeHeaders in write mode
         // as sometimes we may need to create absent type headers
         if (this.typeTranslationTable.get(type) == null) {
             throw new IllegalArgumentException("Unknown type " + type);
+        }
+    }
+
+    static {
+        final int smallBufferSize = 16 * 1024; // 16kb
+        if (FILE_HEADER_SIZE_BYTES > smallBufferSize) {
+            throw new IllegalStateException("Cannot read file header using single small buffer");
+        }
+        if (TypeHeader.TYPE_HEADER_SIZE_BYTES > smallBufferSize) {
+            throw new IllegalStateException("Cannot read type header using single small buffer");
         }
     }
 
@@ -364,10 +370,10 @@ public final class SectorFile implements Closeable {
         this.compressionType = defaultCompressionType;
 
         if (this.channel.size() != 0L) {
-            this.readHeader(unscopedBufferChoices);
+            this.readFileHeader(unscopedBufferChoices);
         }
 
-        boolean modifiedHeader = false;
+        boolean modifiedFileHeader = false;
 
         try (final BufferChoices scopedBufferChoices = unscopedBufferChoices.scope()) {
             final ByteBuffer ioBuffer = scopedBufferChoices.t16k().acquireDirectBuffer();
@@ -376,17 +382,17 @@ public final class SectorFile implements Closeable {
             for (final IntIterator iterator = typeTranslationTable.keySet().iterator(); iterator.hasNext(); ) {
                 final int type = iterator.nextInt();
 
-                if (type < 0 || type >= HEADER_SIZE) {
+                if (type < 0 || type >= MAX_TYPES) {
                     throw new IllegalStateException("Type translation table contains illegal type: " + type);
                 }
 
-                TypeHeader headerData = this.typeHeaders.get(type);
+                final TypeHeader headerData = this.typeHeaders.get(type);
                 if (headerData != null || readOnly) {
                     // allocated or unable to allocate
                     continue;
                 }
 
-                modifiedHeader = true;
+                modifiedFileHeader = true;
 
                 // need to allocate space for new type header
                 final int offset = this.sectorAllocator.allocate(TYPE_HEADER_SECTORS, false); // in sectors
@@ -394,19 +400,17 @@ public final class SectorFile implements Closeable {
                     throw new IllegalStateException("Cannot allocate space for header " + this.debugType(type) + ":" + offset);
                 }
 
-                final int[] headerOffsets = new int[TYPE_HEADER_OFFSET_COUNT];
-                Arrays.fill(headerOffsets, ABSENT_LOCATION);
-                headerData = new TypeHeader(offset, headerOffsets);
+                this.fileHeader.typeHeaderOffsets[type] = offset;
+                // hash will be computed by writeTypeHeader
+                this.typeHeaders.put(type, new TypeHeader());
 
-                this.typeHeaders.put(type, headerData);
-
-                this.writeTypeHeader(ioBuffer, type);
+                this.writeTypeHeader(ioBuffer, type, true, false);
             }
-        }
 
-        // modified the header, so write it back
-        if (modifiedHeader) {
-            this.writeHeader(unscopedBufferChoices);
+            // modified the file header, so write it back
+            if (modifiedFileHeader) {
+                this.writeFileHeader(ioBuffer);
+            }
         }
     }
 
@@ -421,7 +425,7 @@ public final class SectorFile implements Closeable {
 
     private static SectorAllocator newSectorAllocator() {
         final SectorAllocator newSectorAllocation = new SectorAllocator(MAX_NORMAL_SECTOR_OFFSET, MAX_NORMAL_SECTOR_LENGTH);
-        if (!newSectorAllocation.tryAllocateDirect(HEADER_SECTOR, HEADER_SECTORS, false)) {
+        if (!newSectorAllocation.tryAllocateDirect(FILE_HEADER_SECTOR, FILE_HEADER_TOTAL_SECTORS, false)) {
             throw new IllegalStateException("Cannot allocate initial header");
         }
         return newSectorAllocation;
@@ -444,7 +448,7 @@ public final class SectorFile implements Closeable {
             LOGGER.error("An inconsistency has been detected in the headers for file '" + this.file.getAbsolutePath() +
                 "', recalculating the headers", new Throwable());
         }
-        // The header was determined as incorrect, so we are going to rebuild it from the file
+        // The headers are determined as incorrect, so we are going to rebuild it from the file
         final SectorAllocator newSectorAllocation = newSectorAllocator();
 
         final File backup = new File(this.file.getParentFile(), this.file.getName() + "." + new Random().nextLong() + ".backup");
@@ -456,10 +460,7 @@ public final class SectorFile implements Closeable {
         }
 
         class TentativeTypeHeader {
-            final int[] locations = new int[TYPE_HEADER_OFFSET_COUNT];
-            {
-                Arrays.fill(this.locations, ABSENT_LOCATION);
-            }
+            final TypeHeader typeHeader = new TypeHeader();
             final long[] timestamps = new long[TYPE_HEADER_OFFSET_COUNT];
         }
 
@@ -481,7 +482,7 @@ public final class SectorFile implements Closeable {
             final ByteBuffer buffer = scopedChoices.t1m().acquireDirectBuffer();
 
             final long fileSectors = (this.channel.size() + (long)(SECTOR_SIZE - 1)) >>> SECTOR_SHIFT;
-            for (long i = (long)(HEADER_SECTOR + HEADER_SECTORS); i <= Math.min(fileSectors, (long)MAX_NORMAL_SECTOR_OFFSET); ++i) {
+            for (long i = (long)(FILE_HEADER_SECTOR + FILE_HEADER_TOTAL_SECTORS); i <= Math.min(fileSectors, (long)MAX_NORMAL_SECTOR_OFFSET); ++i) {
                 buffer.limit(DataHeader.DATA_HEADER_LENGTH);
                 buffer.position(0);
 
@@ -511,8 +512,8 @@ public final class SectorFile implements Closeable {
                 final int typeId = (int)(dataHeader.typeId & 0xFF);
                 final int index = (int)(dataHeader.index & 0xFFFF);
 
-                if (typeId >= HEADER_SIZE) {
-                    // type id is too large
+                if (typeId < 0 || typeId >= MAX_TYPES) {
+                    // type id is too large or small
                     continue;
                 }
 
@@ -520,7 +521,7 @@ public final class SectorFile implements Closeable {
                     return new TentativeTypeHeader();
                 });
 
-                final int prevLocation = typeHeader.locations[index];
+                final int prevLocation = typeHeader.typeHeader.locations[index];
                 if (prevLocation != ABSENT_LOCATION) {
                     // try to skip data if the data is older
                     final long prevTimestamp = typeHeader.timestamps[index];
@@ -566,7 +567,7 @@ public final class SectorFile implements Closeable {
                     newSectorAllocation.freeAllocation(getLocationOffset(prevLocation), getLocationLength(prevLocation));
                 }
 
-                typeHeader.locations[index] = newLocation;
+                typeHeader.typeHeader.locations[index] = newLocation;
                 typeHeader.timestamps[index] = dataHeader.timeWritten;
 
                 // skip over the sectors, we know they're good
@@ -578,6 +579,7 @@ public final class SectorFile implements Closeable {
 
         final IntOpenHashSet possibleTypes = new IntOpenHashSet(128);
         possibleTypes.addAll(this.typeTranslationTable.keySet());
+        possibleTypes.addAll(this.typeHeaders.keySet());
         possibleTypes.addAll(newTypeHeaders.keySet());
 
         // search for external files
@@ -647,7 +649,7 @@ public final class SectorFile implements Closeable {
                         return new TentativeTypeHeader();
                     });
 
-                    final int prevLocation = typeHeader.locations[index];
+                    final int prevLocation = typeHeader.typeHeader.locations[index];
                     final long prevTimestamp = typeHeader.timestamps[index];
 
                     if (prevLocation != ABSENT_LOCATION) {
@@ -674,14 +676,15 @@ public final class SectorFile implements Closeable {
                         newSectorAllocation.freeAllocation(getLocationOffset(prevLocation), getLocationLength(prevLocation));
                     }
 
-                    typeHeader.locations[index] = EXTERNAL_ALLOCATION_LOCATION;
+                    typeHeader.typeHeader.locations[index] = EXTERNAL_ALLOCATION_LOCATION;
                     typeHeader.timestamps[index] = header.timeWritten;
                 }
             }
         }
 
-        // now we can build the new type headers
+        // now we can build the new headers
         final Int2ObjectLinkedOpenHashMap<TypeHeader> newHeaders = new Int2ObjectLinkedOpenHashMap<>(newTypeHeaders.size());
+        final FileHeader newFileHeader = new FileHeader();
 
         for (final Iterator<Int2ObjectMap.Entry<TentativeTypeHeader>> iterator = newTypeHeaders.int2ObjectEntrySet().fastIterator(); iterator.hasNext();) {
             final Int2ObjectMap.Entry<TentativeTypeHeader> entry = iterator.next();
@@ -694,7 +697,9 @@ public final class SectorFile implements Closeable {
                 throw new IllegalStateException("Failed to allocate type header");
             }
 
-            newHeaders.put(type, new TypeHeader(sectorOffset, tentativeTypeHeader.locations));
+            newHeaders.put(type, tentativeTypeHeader.typeHeader);
+            newFileHeader.typeHeaderOffsets[type] = sectorOffset;
+            // hash will be computed later by writeTypeHeader
         }
 
         // now print the changes we're about to make
@@ -713,7 +718,7 @@ public final class SectorFile implements Closeable {
             boolean hasChanges;
             if (oldTypeHeader == null) {
                 hasChanges = false;
-                final int[] test = newTypeHeader.headerData;
+                final int[] test = newTypeHeader.locations;
                 for (int i = 0; i < test.length; ++i) {
                     if (test[i] != ABSENT_LOCATION) {
                         hasChanges = true;
@@ -721,7 +726,7 @@ public final class SectorFile implements Closeable {
                     }
                 }
             } else {
-                hasChanges = !Arrays.equals(oldTypeHeader.headerData, newTypeHeader.headerData);
+                hasChanges = !Arrays.equals(oldTypeHeader.locations, newTypeHeader.locations);
             }
 
             if (!hasChanges) {
@@ -740,8 +745,8 @@ public final class SectorFile implements Closeable {
                 for (int localX = 0; localX < SECTION_SIZE; ++localX) {
                     final int index = getIndex(localX, localZ);
 
-                    final int oldLocation = oldTypeHeader == null ? ABSENT_LOCATION : oldTypeHeader.headerData[index];
-                    final int newLocation = newTypeHeader.headerData[index];
+                    final int oldLocation = oldTypeHeader == null ? ABSENT_LOCATION : oldTypeHeader.locations[index];
+                    final int newLocation = newTypeHeader.locations[index];
 
                     if (oldLocation == newLocation) {
                         continue;
@@ -775,6 +780,7 @@ public final class SectorFile implements Closeable {
         // replace-in memory
         this.typeHeaders.clear();
         this.typeHeaders.putAll(newHeaders);
+        this.fileHeader.copyFrom(newFileHeader);
         this.sectorAllocator.copyAllocations(newSectorAllocation);
 
         // write to disk
@@ -783,12 +789,20 @@ public final class SectorFile implements Closeable {
             for (final IntIterator iterator = newHeaders.keySet().iterator(); iterator.hasNext();) {
                 final int type = iterator.nextInt();
                 try (final BufferChoices headerBuffers = unscopedBufferChoices.scope()) {
-                    this.writeTypeHeader(headerBuffers.t16k().acquireDirectBuffer(), type);
+                    try {
+                        this.writeTypeHeader(headerBuffers.t16k().acquireDirectBuffer(), type, true, false);
+                    } catch (final IOException ex) {
+                        // to ensure we update all the type header hashes, we need call writeTypeHeader for all type headers
+                        // so, we need to catch any IO errors here
+                        LOGGER.error("Failed to write type header " + this.debugType(type) + " to disk for sectorfile " + this.file.getAbsolutePath(), ex);
+                    }
                 }
             }
 
             // then we can write the main header
-            this.writeHeader(unscopedBufferChoices);
+            try (final BufferChoices headerBuffers = unscopedBufferChoices.scope()) {
+                this.writeFileHeader(headerBuffers.t16k().acquireDirectBuffer());
+            }
 
             if ((flags & RECALCULATE_FLAGS_NO_LOG) == 0) {
                 LOGGER.info("Successfully wrote new headers to disk for sectorfile " + this.file.getAbsolutePath());
@@ -817,67 +831,57 @@ public final class SectorFile implements Closeable {
         }
     }
 
-    private void writeHeader(final BufferChoices unscopedBufferChoices) throws IOException {
-        try (final BufferChoices scopedBufferChoices = unscopedBufferChoices.scope()) {
-            final ByteBuffer ioBuffer = scopedBufferChoices.t16k().acquireDirectBuffer();
+    private void writeFileHeader(final ByteBuffer ioBuffer) throws IOException {
+        ioBuffer.limit(FILE_HEADER_SIZE_BYTES);
+        ioBuffer.position(0);
 
-            ioBuffer.limit(HEADER_SIZE * INT_SIZE);
-            ioBuffer.position(0);
+        this.fileHeader.write(ioBuffer.duplicate());
 
-            final IntBuffer ioIntBuffer = ioBuffer.asIntBuffer();
-            // set default state
-            for (int i = 0; i < HEADER_SIZE; ++i) {
-                ioIntBuffer.put(i, ABSENT_HEADER_LOCATION);
-            }
-
-            for (final Iterator<Int2ObjectMap.Entry<TypeHeader>> iterator = this.typeHeaders.int2ObjectEntrySet().fastIterator(); iterator.hasNext(); ) {
-                final Int2ObjectMap.Entry<TypeHeader> entry = iterator.next();
-
-                final int type = entry.getIntKey();
-                final TypeHeader header = entry.getValue();
-                final int offset = header.headerDataOffset;
-
-                ioIntBuffer.put(type, offset);
-            }
-
-            this.write(ioBuffer, (long)HEADER_SECTOR << SECTOR_SHIFT);
-        }
+        this.write(ioBuffer, (long)FILE_HEADER_SECTOR << SECTOR_SHIFT);
     }
 
-    private void readHeader(final BufferChoices unscopedBufferChoices) throws IOException {
+    private void readFileHeader(final BufferChoices unscopedBufferChoices) throws IOException {
         try (final BufferChoices scopedBufferChoices = unscopedBufferChoices.scope()) {
-            final ByteBuffer ioBufferHeader = scopedBufferChoices.t16k().acquireDirectBuffer();
-            final ByteBuffer ioBufferTypeHeader = scopedBufferChoices.t16k().acquireDirectBuffer();
+            final ByteBuffer buffer = scopedBufferChoices.t16k().acquireDirectBuffer();
 
             // reset sector allocations + headers for debug/testing
             this.sectorAllocator.copyAllocations(newSectorAllocator());
             this.typeHeaders.clear();
+            this.fileHeader.reset();
 
-            ioBufferHeader.position(0);
-            ioBufferHeader.limit(HEADER_SIZE * INT_SIZE);
+            buffer.position(0);
+            buffer.limit(FILE_HEADER_SIZE_BYTES);
 
             final long fileLengthSectors = (this.channel.size() + (SECTOR_SIZE - 1L)) >> SECTOR_SHIFT;
 
-            int read = this.channel.read(ioBufferHeader, (long)HEADER_SECTOR << SECTOR_SHIFT);
+            int read = this.channel.read(buffer, (long)FILE_HEADER_SECTOR << SECTOR_SHIFT);
 
-            if (read != ioBufferHeader.limit()) {
-                LOGGER.warn("File '" + this.file.getAbsolutePath() + "' has a truncated header");
+            if (read != buffer.limit()) {
+                LOGGER.warn("File '" + this.file.getAbsolutePath() + "' has a truncated file header");
                 // File is truncated
-                // All headers will initialise to 0
+                // All headers will initialise to default
                 return;
             }
 
-            ioBufferHeader.position(0);
+            buffer.position(0);
 
-            final IntBuffer bufferHeaderInt = ioBufferHeader.asIntBuffer();
+            if (!FileHeader.validate(buffer, 0)) {
+                LOGGER.warn("File '" + this.file.getAbsolutePath() + "' has file header with hash mismatch");
+                if (!this.readOnly) {
+                    this.recalculateFile(unscopedBufferChoices, 0);
+                    return;
+                } // else: in read-only mode, try to parse the header still
+            }
+
+            FileHeader.read(buffer, this.fileHeader);
 
             // delay recalculation so that the logs contain all errors found
             boolean needsRecalculation = false;
 
-            // try to allocate space for type headers
-            for (int i = 0; i < HEADER_SIZE; ++i) {
-                final int typeHeaderOffset = bufferHeaderInt.get(i);
-                if (typeHeaderOffset == ABSENT_HEADER_LOCATION) {
+            // try to allocate space for written type headers
+            for (int i = 0; i < MAX_TYPES; ++i) {
+                final int typeHeaderOffset = this.fileHeader.typeHeaderOffsets[i];
+                if (typeHeaderOffset == ABSENT_TYPE_HEADER_OFFSET) {
                     // no data
                     continue;
                 }
@@ -894,23 +898,35 @@ public final class SectorFile implements Closeable {
                 }
 
                 // parse header
-                ioBufferTypeHeader.position(0);
-                ioBufferTypeHeader.limit(TYPE_HEADER_SECTORS * SECTOR_SIZE);
-                read = this.channel.read(ioBufferTypeHeader, (long)typeHeaderOffset << SECTOR_SHIFT);
+                buffer.position(0);
+                buffer.limit(TypeHeader.TYPE_HEADER_SIZE_BYTES);
+                read = this.channel.read(buffer, (long)typeHeaderOffset << SECTOR_SHIFT);
 
-                if (read != ioBufferTypeHeader.limit()) {
+                if (read != buffer.limit()) {
                     LOGGER.error("File '" + this.file.getAbsolutePath() + "' has type header " + this.debugType(i) + " pointing to outside of file: " + typeHeaderOffset);
                     needsRecalculation = true;
                     continue;
                 }
 
-                final int[] header = new int[TYPE_HEADER_OFFSET_COUNT];
-                ioBufferTypeHeader.flip().asIntBuffer().get(0, header, 0, header.length);
+                final long expectedHash = this.fileHeader.xxHash64TypeHeader[i];
+                final long gotHash = TypeHeader.computeHash(buffer, 0);
+
+                if (expectedHash != gotHash) {
+                    LOGGER.error("File '" + this.file.getAbsolutePath() + "' has type header " + this.debugType(i) + " with a mismatched hash");
+                    needsRecalculation = true;
+                    if (!this.readOnly) {
+                        continue;
+                    } // else: in read-only mode, try to parse the type header still
+                }
+
+                final TypeHeader typeHeader = TypeHeader.read(buffer.flip());
+
+                final int[] locations = typeHeader.locations;
 
                 // here, we now will try to allocate space for the data in the type header
                 // we need to do it even if we don't know what type we're dealing with
-                for (int k = 0; k < header.length; ++k) {
-                    final int location = header[k];
+                for (int k = 0; k < locations.length; ++k) {
+                    final int location = locations[k];
                     if (location == ABSENT_LOCATION || location == EXTERNAL_ALLOCATION_LOCATION) {
                         // no data or it is on the external file
                         continue;
@@ -939,7 +955,7 @@ public final class SectorFile implements Closeable {
                     }
                 }
 
-                this.typeHeaders.put(i, new TypeHeader(typeHeaderOffset, header));
+                this.typeHeaders.put(i, typeHeader);
             }
 
             if (needsRecalculation) {
@@ -951,20 +967,35 @@ public final class SectorFile implements Closeable {
         }
     }
 
-    private void writeTypeHeader(final ByteBuffer ioBuffer, final int type) throws IOException {
+    private void writeTypeHeader(final ByteBuffer buffer, final int type, final boolean updateTypeHeaderHash,
+                                 final boolean writeFileHeader) throws IOException {
         final TypeHeader headerData = this.typeHeaders.get(type);
         if (headerData == null) {
             throw new IllegalStateException("Unhandled type: " + type);
         }
 
-        final int[] header = headerData.headerData;
+        if (writeFileHeader & !updateTypeHeaderHash) {
+            throw new IllegalArgumentException("Cannot write file header without updating type header hash");
+        }
 
-        ioBuffer.position(0);
-        ioBuffer.limit(TYPE_HEADER_SECTORS * SECTOR_SIZE);
+        final int offset = this.fileHeader.typeHeaderOffsets[type];
 
-        ioBuffer.asIntBuffer().put(0, header, 0, header.length);
+        buffer.position(0);
+        buffer.limit(TypeHeader.TYPE_HEADER_SIZE_BYTES);
 
-        this.write(ioBuffer, (long)headerData.headerDataOffset << SECTOR_SHIFT);
+        headerData.write(buffer.duplicate());
+
+        final long hash;
+        if (updateTypeHeaderHash) {
+            hash = TypeHeader.computeHash(buffer, 0);
+            this.fileHeader.xxHash64TypeHeader[type] = hash;
+        }
+
+        this.write(buffer, (long)offset << SECTOR_SHIFT);
+
+        if (writeFileHeader) {
+            this.writeFileHeader(buffer);
+        }
     }
 
     private void updateAndWriteTypeHeader(final ByteBuffer ioBuffer, final int type, final int index, final int to) throws IOException {
@@ -973,9 +1004,9 @@ public final class SectorFile implements Closeable {
             throw new IllegalStateException("Unhandled type: " + type);
         }
 
-        headerData.headerData[index] = to;
+        headerData.locations[index] = to;
 
-        this.writeTypeHeader(ioBuffer, type);
+        this.writeTypeHeader(ioBuffer, type, true, true);
     }
 
     private void deleteExternalFile(final int localX, final int localZ, final int type) throws IOException {
@@ -1042,7 +1073,7 @@ public final class SectorFile implements Closeable {
         }
 
         final int index = getIndex(localX, localZ);
-        final int location = typeHeader.headerData[index];
+        final int location = typeHeader.locations[index];
 
         return location != ABSENT_LOCATION;
     }
@@ -1087,7 +1118,7 @@ public final class SectorFile implements Closeable {
 
         final int index = getIndex(localX, localZ);
 
-        final int location = typeHeader.headerData[index];
+        final int location = typeHeader.locations[index];
 
         if (location == ABSENT_LOCATION) {
             return null;
@@ -1209,7 +1240,7 @@ public final class SectorFile implements Closeable {
         }
 
         final int index = getIndex(localX, localZ);
-        final int location = typeHeader.headerData[index];
+        final int location = typeHeader.locations[index];
 
         if (location == ABSENT_LOCATION) {
             return false;
@@ -1324,7 +1355,7 @@ public final class SectorFile implements Closeable {
         // write data to allocated space
         this.write(buffer, (long)sectorToStore << SECTOR_SHIFT);
 
-        final int prevLocation = this.typeHeaders.get(type).headerData[index];
+        final int prevLocation = this.typeHeaders.get(type).locations[index];
 
         // update header on disk
         final int newLocation = makeLocation(sectorToStore, requiredSectors);
@@ -1387,7 +1418,7 @@ public final class SectorFile implements Closeable {
             Files.move(externalTmp.toPath(), external.toPath(), StandardCopyOption.REPLACE_EXISTING);
         }
 
-        final int prevLocation = this.typeHeaders.get(type).headerData[index];
+        final int prevLocation = this.typeHeaders.get(type).locations[index];
 
         // update header on disk if required
 
