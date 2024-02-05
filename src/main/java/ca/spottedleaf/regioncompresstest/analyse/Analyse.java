@@ -1,17 +1,13 @@
-package ca.spottedleaf.regioncompresstest.conversion;
+package ca.spottedleaf.regioncompresstest.analyse;
 
-import ca.spottedleaf.io.region.SectorFile;
-import ca.spottedleaf.io.region.MinecraftRegionFileType;
-import ca.spottedleaf.io.region.SectorFileCompressionType;
 import ca.spottedleaf.io.buffer.BufferChoices;
+import ca.spottedleaf.io.region.MinecraftRegionFileType;
+import ca.spottedleaf.io.region.SectorFile;
 import ca.spottedleaf.regioncompresstest.Main;
 import ca.spottedleaf.regioncompresstest.storage.RegionFile;
 import it.unimi.dsi.fastutil.ints.Int2ObjectLinkedOpenHashMap;
-
-import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -21,7 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 
-public final class VerifyWorld {
+public final class Analyse {
 
     private static final String[] SUBDIRS = new String[] {
             "",
@@ -29,10 +25,7 @@ public final class VerifyWorld {
             "DIM1"
     };
 
-    private static final String TARGET_DIRECTORY = "sectors";
-
     public static final String INPUT_PROPERTY = "input";
-    public static final String TYPE_OUTPUT_PROPERTY = "compress";
 
     private static ExecutorService createExecutors() {
         return Executors.newFixedThreadPool(Main.THREADS, new ThreadFactory() {
@@ -62,8 +55,33 @@ public final class VerifyWorld {
         }
     }
 
+    private static class StatsAccumulator {
+
+        public long fileSectors = 0L;
+        public long allocatedSectors = 0L;
+        public long alternateAllocatedSectors = 0L;
+        public long dataSizeBytes = 0L;
+        public long errors = 0L;
+
+        public synchronized void accumulate(final RegionFile.AllocationStats stats) {
+            this.fileSectors += stats.fileSectors();
+            this.allocatedSectors += stats.allocatedSectors();
+            this.alternateAllocatedSectors += stats.alternateAllocatedSectors();
+            this.dataSizeBytes += stats.dataSizeBytes();
+            this.errors += (long)stats.errors();
+        }
+
+        public void print() {
+            System.out.println("File sectors: " + this.fileSectors);
+            System.out.println("Allocated sectors: " + this.allocatedSectors);
+            System.out.println("Alternate allocated sectors: " + this.alternateAllocatedSectors);
+            System.out.println("Total data size: " + this.dataSizeBytes);
+            System.out.println("Errors: " + this.errors);
+        }
+    }
+
     private static void submitToExecutor(final ExecutorService executor, final File dimDirectory, final String regionName,
-                                         final SectorFileCompressionType compressionType, final BufferChoices unscopedBufferChoices,
+                                         final BufferChoices unscopedBufferChoices, final StatsAccumulator accumulator,
                                          final AtomicInteger concurrentTracker, final Thread wakeup, final int threshold) {
         // old format is r.<x>.<z>.mca
 
@@ -77,26 +95,6 @@ public final class VerifyWorld {
             sectionZ = Integer.parseInt(coords[1]);
         } catch (final NumberFormatException ex) {
             System.err.println("Invalid region name: " + regionName);
-            return;
-        }
-
-        final File output = new File(
-                new File(dimDirectory, TARGET_DIRECTORY),
-                SectorFile.getFileName(sectionX, sectionZ)
-        );
-
-        final SectorFile outputFile;
-        try {
-            outputFile = new SectorFile(
-                    output, sectionX, sectionZ, compressionType, unscopedBufferChoices,
-                    MinecraftRegionFileType.getTranslationTable(),
-                    0
-            );
-        } catch (final IOException ex) {
-            synchronized (System.err) {
-                System.err.println("Failed to create sector file " + output.getAbsolutePath() + ": ");
-                ex.printStackTrace(System.err);
-            }
             return;
         }
 
@@ -126,85 +124,31 @@ public final class VerifyWorld {
 
             @Override
             public void run() {
-                try (final BufferChoices regionReadScope = unscopedBufferChoices.scope()) {
-                    final RegionFile.CustomByteArrayOutputStream decompressed = new RegionFile.CustomByteArrayOutputStream(regionReadScope.t1m().acquireJavaBuffer());
-
-                    for (int i = 0; i < 32 * 32; ++i) {
-                        final int chunkX = (i & 31);
-                        final int chunkZ = ((i >>> 5) & 31);
-
-                        for (final MinecraftRegionFileType type : MinecraftRegionFileType.getAll()) {
-                            final RegionFile regionFile = byId.get(type.getNewId());
-                            if (regionFile == null) {
-                                continue;
-                            }
-
-                            decompressed.reset();
-
-                            boolean read = false;
-                            try {
-                                read = regionFile.read(chunkX, chunkZ, regionReadScope, decompressed);
-                            } catch (final IOException ex) {
-                                synchronized (System.err) {
-                                    System.err.println(
-                                            "Failed to read " + type.getName() + " (" + chunkX + "," + chunkZ + ") from regionfile " +
-                                                    regionFile.file.getAbsolutePath() + ": ");
-                                    ex.printStackTrace(System.err);
-                                }
-                            }
-
-                            if (!read) {
-                                continue;
-                            }
-
-                            try (final BufferChoices sectorReadScope = regionReadScope.scope();) {
-                                final DataInputStream is = outputFile.read(sectorReadScope, chunkX, chunkZ, type.getNewId(), SectorFile.FULL_VALIDATION_FLAGS);
-
-                                if (is == null) {
-                                    throw new IOException("Does not exist on sector file");
-                                }
-
-                                final byte[] bytes = new byte[decompressed.size()];
-
-                                int len = 0;
-                                int r;
-                                while (len < bytes.length && (r = is.read(bytes, len, bytes.length - len)) >= 0) {
-                                    len += r;
-                                }
-
-                                if (len != bytes.length) {
-                                    throw new IOException("Too small: got " + (len) + " compared to " + bytes.length);
-                                }
-
-                                if (is.read() != -1) {
-                                    throw new IOException("Too large: got " + (is.available() + len + 1) + " compared to " + bytes.length);
-                                }
-
-                                if (!Arrays.equals(bytes, 0, bytes.length, decompressed.getBuffer(), 0, decompressed.size())) {
-                                    throw new IOException("Unequal data");
-                                }
-                            } catch (final IOException ex) {
-                                synchronized (System.err) {
-                                    System.err.println(
-                                            "Failed to read " + type.getName() + " (" + chunkX + "," + chunkZ +
-                                                ") from sectorfile " + output.getAbsolutePath() + ": ");
-                                    ex.printStackTrace(System.err);
-                                }
-                            }
+                try {
+                    for (final MinecraftRegionFileType type : MinecraftRegionFileType.getAll()) {
+                        final RegionFile regionFile = byId.get(type.getNewId());
+                        if (regionFile == null) {
+                            continue;
                         }
+
+                        final RegionFile.AllocationStats stats;
+                        try {
+                            stats = regionFile.computeStats(unscopedBufferChoices, SectorFile.SECTOR_SIZE, SectorFile.DataHeader.DATA_HEADER_LENGTH);
+                        } catch (final IOException ex) {
+                            synchronized (System.err) {
+                                System.err.println("Failed to read stats from regionfile '" + regionFile.file.getAbsolutePath() + "': ");
+                                ex.printStackTrace(System.err);
+                            }
+                            continue;
+                        }
+
+                        accumulator.accumulate(stats);
                     }
                 } finally {
                     decrementTracker(concurrentTracker, wakeup, threshold);
 
-                    try {
-                        outputFile.close();
-                    } catch (final IOException ex) {
-                        synchronized (System.err) {
-                            System.err.println("Failed to close sectorfile " + outputFile.file.getAbsolutePath() + ": ");
-                            ex.printStackTrace(System.err);
-                        }
-                    }
                     for (final RegionFile regionFile : byId.values()) {
+                        System.out.println("Processed regionfile " + regionFile.file.getAbsolutePath());
                         try {
                             regionFile.close();
                         } catch (final IOException ex) {
@@ -215,8 +159,6 @@ public final class VerifyWorld {
                         }
                     }
                 }
-
-                System.out.println("Processed sectorfile " + outputFile.file.getAbsolutePath());
             }
         }
 
@@ -226,19 +168,12 @@ public final class VerifyWorld {
     public static void run(final String[] args) {
         final String inputDirectoryPath = System.getProperty(INPUT_PROPERTY);
         if (inputDirectoryPath == null) {
-            System.err.println("Must specify input (directory or region file) as -D" + INPUT_PROPERTY + "=<path>");
+            System.err.println("Must specify base world directory as -D" + INPUT_PROPERTY + "=<path>");
             return;
         }
         final File inputDir = new File(inputDirectoryPath);
         if (!inputDir.isDirectory()) {
             System.err.println("Specified input is not a directory or .mca file");
-            return;
-        }
-
-        final SectorFileCompressionType compressionType = SectorFileCompressionType.getById(Integer.getInteger(TYPE_OUTPUT_PROPERTY, -1));
-        if (compressionType == null) {
-            System.err.println("Specified compression type is absent (-D" + TYPE_OUTPUT_PROPERTY + "=<id>) or invalid");
-            System.err.println("Select one from: 1 (GZIP), 2 (DEFLATE), 3 (NONE), 4 (LZ4)");
             return;
         }
 
@@ -251,8 +186,10 @@ public final class VerifyWorld {
         final int targetConcurrent = Main.THREADS * 4;
         final int waitThreshold = targetConcurrent / 2;
 
+        final StatsAccumulator accumulator = new StatsAccumulator();
+
         for (final String subdir : SUBDIRS) {
-            System.out.println("Verifying dimension " + (subdir.isEmpty() ? "overworld" : subdir));
+            System.out.println("Analysing dimension " + (subdir.isEmpty() ? "overworld" : subdir));
 
             final File dimDirectory = subdir.isEmpty() ? inputDir : new File(inputDir, subdir);
 
@@ -283,10 +220,8 @@ public final class VerifyWorld {
                 continue;
             }
 
-            new File(dimDirectory, TARGET_DIRECTORY).mkdir();
-
             for (final String convert : toConvert) {
-                submitToExecutor(executors, dimDirectory, convert, compressionType, bufferChoices, concurrentExecutions, Thread.currentThread(), waitThreshold);
+                submitToExecutor(executors, dimDirectory, convert, bufferChoices, accumulator, concurrentExecutions, Thread.currentThread(), waitThreshold);
 
                 if (concurrentExecutions.get() >= targetConcurrent) {
                     while (concurrentExecutions.get() > waitThreshold) {
@@ -299,7 +234,7 @@ public final class VerifyWorld {
                 LockSupport.park("Awaiting finish");
             }
 
-            System.out.println("Verified dimension " + (subdir.isEmpty() ? "overworld" : subdir));
+            System.out.println("Analysed dimension " + (subdir.isEmpty() ? "overworld" : subdir));
         }
 
         while (concurrentExecutions.get() > 0) {
@@ -310,5 +245,7 @@ public final class VerifyWorld {
         try {
             executors.awaitTermination(1, TimeUnit.MINUTES);
         } catch (final InterruptedException ignore) {}
+
+        accumulator.print();
     }
 }

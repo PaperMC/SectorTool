@@ -1,5 +1,6 @@
 package ca.spottedleaf.regioncompresstest;
 
+import ca.spottedleaf.regioncompresstest.analyse.Analyse;
 import ca.spottedleaf.regioncompresstest.conversion.ConvertWorld;
 import ca.spottedleaf.regioncompresstest.conversion.VerifyWorld;
 import ca.spottedleaf.regioncompresstest.fuzz.FuzzProfilingTest;
@@ -57,6 +58,10 @@ public class Main {
                 FuzzProfilingTest.run(args);
                 break;
             }
+            case ANALYSE: {
+                Analyse.run(args);
+                break;
+            }
 
             default: {
                 throw new IllegalStateException("Unhandled operation: " + OPERATION);
@@ -68,7 +73,7 @@ public class Main {
 
     public static enum Operation {
         TEST("test"), READ("read"), CONVERT("conv"), VERIFY("verify"),
-        FUZZ("fuzz");
+        FUZZ("fuzz"), ANALYSE("analyse");
 
         private static final Map<String, Operation> BY_PROPERTY_LC = new HashMap<>();
 

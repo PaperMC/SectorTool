@@ -369,9 +369,23 @@ public final class RunProfilingTest {
     private static void submitToExecutor(final ExecutorService executor, final File file, final BufferChoices unscopedBufferChoices,
                                          final AbstractBufferedDataByteBufferOutputStream out,
                                          final AtomicInteger concurrentTracker, final Thread wakeup, final int threshold) {
+        final String regionName = file.getName();
+        final String[] coords = regionName.substring(2, regionName.length() - RegionFile.ANVIL_EXTENSION.length()).split("\\.");
+
+        final int sectionX;
+        final int sectionZ;
+
+        try {
+            sectionX = Integer.parseInt(coords[0]);
+            sectionZ = Integer.parseInt(coords[1]);
+        } catch (final NumberFormatException ex) {
+            System.err.println("Invalid region name: " + regionName);
+            return;
+        }
+
         final RegionFile regionFile;
         try  {
-            regionFile = new RegionFile(file,  unscopedBufferChoices);
+            regionFile = new RegionFile(file, sectionX, sectionZ, unscopedBufferChoices);
         } catch (final IOException ex) {
             synchronized (System.err) {
                 System.err.println("Failed to open regionfile " + file.getAbsolutePath() + ": ");

@@ -1,7 +1,9 @@
 package ca.spottedleaf.regioncompresstest.storage;
 
+import ca.spottedleaf.io.region.io.bytebuffer.BufferedFileChannelInputStream;
 import ca.spottedleaf.io.region.io.bytebuffer.ByteBufferInputStream;
 import ca.spottedleaf.io.buffer.BufferChoices;
+import it.unimi.dsi.fastutil.ints.IntArrayList;
 import net.jpountz.lz4.LZ4BlockInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
@@ -27,7 +29,8 @@ public final class RegionFile implements Closeable {
     public static final String ANVIL_EXTENSION = ".mca";
     public static final String MCREGION_EXTENSION = ".mcr";
 
-    private static final int SECTOR_SIZE = 4096;
+    private static final int SECTOR_SHIFT = 12;
+    private static final int SECTOR_SIZE = 1 << SECTOR_SHIFT;
 
     private static final int BYTE_SIZE   = Byte.BYTES;
     private static final int SHORT_SIZE  = Short.BYTES;
@@ -42,11 +45,15 @@ public final class RegionFile implements Closeable {
     private final int[] timestamps = new int[SECTOR_SIZE / INT_SIZE];
 
     public final File file;
+    public final int sectionX;
+    public final int sectionZ;
 
     private FileChannel channel;
 
-    public RegionFile(final File file, final BufferChoices unscopedBufferChoices) throws IOException {
+    public RegionFile(final File file, final int sectionX, final int sectionZ, final BufferChoices unscopedBufferChoices) throws IOException {
         this.file = file;
+        this.sectionX = sectionX;
+        this.sectionZ = sectionZ;
         this.channel = FileChannel.open(file.toPath(), StandardOpenOption.READ);
 
         if (this.channel.size() < (2L * (long)SECTOR_SIZE)) {
@@ -82,6 +89,84 @@ public final class RegionFile implements Closeable {
         return this.getLocation(x, z) != 0;
     }
 
+    private File getExternalFile(final int x, final int z) {
+        final int cx = (x & 31) | (this.sectionX << 5);
+        final int cz = (z & 31) | (this.sectionZ << 5);
+
+        return new File(this.file.getParentFile(), "c." + cx + "." + cz + ".mcc");
+    }
+
+    public static record AllocationStats(long fileSectors, long allocatedSectors, long alternateAllocatedSectors, long dataSizeBytes, int errors) {}
+
+    private int[] getHeaderSorted() {
+        final IntArrayList list = new IntArrayList(this.header.length);
+        for (final int location : this.header) {
+            list.add(location);
+        }
+
+        list.sort((a, b) -> Integer.compare(getLocationOffset(a), getLocationOffset(b)));
+
+        return list.toArray(new int[this.header.length]);
+    }
+
+    public AllocationStats computeStats(final BufferChoices unscopedBufferChoices, final int alternateSectorSize,
+                                        final int alternateOverhead) throws IOException {
+        final long fileSectors = ((this.file.length() + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT);
+
+        long allocatedSectors = Math.min(fileSectors, 2L);
+        long alternateAllocatedSectors = 0L;
+        int errors = 0;
+        long dataSize = 0L;
+
+        try (final BufferChoices scopedBufferChoices = unscopedBufferChoices.scope()) {
+            final ByteBuffer ioBuffer = scopedBufferChoices.t16k().acquireDirectBuffer();
+
+            for (final int location : this.getHeaderSorted()) {
+                if (location == 0) {
+                    continue;
+                }
+
+                final int offset = getLocationOffset(location);
+                final int size = getLocationSize(location);
+
+                if (offset <= 1 || size <= 0 || (offset + size) > fileSectors) {
+                    // invalid
+                    ++errors;
+                    continue;
+                }
+
+                ioBuffer.limit(INT_SIZE);
+                ioBuffer.position(0);
+
+                this.channel.read(ioBuffer, (long)offset << SECTOR_SHIFT);
+
+                if (ioBuffer.hasRemaining()) {
+                    ++errors;
+                    continue;
+                }
+
+                final int rawSize = ioBuffer.getInt(0) + INT_SIZE;
+
+                final int rawEnd = rawSize + (offset << SECTOR_SHIFT);
+                if (rawSize <= 0 || rawEnd <= 0 || ((rawSize + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT) > fileSectors) {
+                    ++errors;
+                    continue;
+                }
+
+                final int compressedSize = rawSize - (INT_SIZE + BYTE_SIZE);
+
+                final int alternateRawSize = (compressedSize + alternateOverhead);
+
+                // support forge oversized by using data size
+                allocatedSectors += (long)((rawSize + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT);
+                dataSize += (long)compressedSize;
+                alternateAllocatedSectors += (long)((alternateRawSize + (alternateSectorSize - 1)) / alternateSectorSize);
+            }
+        }
+
+        return new AllocationStats(fileSectors, allocatedSectors, alternateAllocatedSectors, dataSize, errors);
+    }
+
     public boolean read(final int x, final int z, final BufferChoices unscopedBufferChoices, final RegionFile.CustomByteArrayOutputStream decompressed) throws IOException {
         final int location = this.getLocation(x, z);
 
@@ -89,8 +174,6 @@ public final class RegionFile implements Closeable {
             // absent
             return false;
         }
-
-        // TODO support vanilla oversized
 
         try (final BufferChoices scopedBufferChoices = unscopedBufferChoices.scope()) {
             ByteBuffer compressedData = scopedBufferChoices.t1m().acquireDirectBuffer();
@@ -122,14 +205,28 @@ public final class RegionFile implements Closeable {
 
 
             final int length = compressedData.getInt(0) - BYTE_SIZE;
-            final byte type = compressedData.get(0 + INT_SIZE);
+            byte type = compressedData.get(0 + INT_SIZE);
             compressedData.position(0 + INT_SIZE + BYTE_SIZE);
 
             if (compressedData.remaining() < length) {
                 throw new EOFException("Truncated data");
             }
 
-            final InputStream rawIn = new ByteBufferInputStream(compressedData);
+            final InputStream rawIn;
+            if ((type & 128) != 0) {
+                // stored externally
+                type = (byte)((int)type & 127);
+
+                final File external = this.getExternalFile(x, z);
+                if (!external.isFile()) {
+                    System.err.println("Externally stored chunk data '" + external.getAbsolutePath() + "' does not exist");
+                    return false;
+                }
+
+                rawIn = new BufferedFileChannelInputStream(scopedBufferChoices.t16k().acquireDirectBuffer(), this.getExternalFile(x, z));
+            } else {
+                rawIn = new ByteBufferInputStream(compressedData);
+            }
 
             InputStream decompress = null;
             try {

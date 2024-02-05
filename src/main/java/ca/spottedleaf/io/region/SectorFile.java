@@ -96,10 +96,11 @@ public final class SectorFile implements Closeable {
      */
     private static final int FILE_HEADER_SECTOR = 0;
     public static final int MAX_TYPES = 42;
-    private static final int FILE_HEADER_SIZE_BYTES = LONG_SIZE + MAX_TYPES*(LONG_SIZE + INT_SIZE);
-    private static final int FILE_HEADER_TOTAL_SECTORS = (FILE_HEADER_SIZE_BYTES + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT;
 
-    private static final class FileHeader {
+    public static final class FileHeader {
+
+        public static final int FILE_HEADER_SIZE_BYTES = LONG_SIZE + MAX_TYPES*(LONG_SIZE + INT_SIZE);
+        public static final int FILE_HEADER_TOTAL_SECTORS = (FILE_HEADER_SIZE_BYTES + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT;
 
         public final long[] xxHash64TypeHeader = new long[MAX_TYPES];
         public final int[] typeHeaderOffsets = new int[MAX_TYPES];
@@ -157,7 +158,7 @@ public final class SectorFile implements Closeable {
         }
     }
 
-    private static record DataHeader(
+    public static record DataHeader(
             long xxhash64Header,
             long xxhash64Data,
             long timeWritten,
@@ -185,7 +186,7 @@ public final class SectorFile implements Closeable {
             buffer.putLong(pos, computeHash(xxHash64, buffer, pos));
         }
 
-        private static final int DATA_HEADER_LENGTH = LONG_SIZE + LONG_SIZE + LONG_SIZE + INT_SIZE + SHORT_SIZE + BYTE_SIZE + BYTE_SIZE;
+        public static final int DATA_HEADER_LENGTH = LONG_SIZE + LONG_SIZE + LONG_SIZE + INT_SIZE + SHORT_SIZE + BYTE_SIZE + BYTE_SIZE;
 
         public static DataHeader read(final ByteBuffer buffer) {
             if (buffer.remaining() < DATA_HEADER_LENGTH) {
@@ -331,7 +332,7 @@ public final class SectorFile implements Closeable {
 
     static {
         final int smallBufferSize = 16 * 1024; // 16kb
-        if (FILE_HEADER_SIZE_BYTES > smallBufferSize) {
+        if (FileHeader.FILE_HEADER_SIZE_BYTES > smallBufferSize) {
             throw new IllegalStateException("Cannot read file header using single small buffer");
         }
         if (TypeHeader.TYPE_HEADER_SIZE_BYTES > smallBufferSize) {
@@ -425,7 +426,7 @@ public final class SectorFile implements Closeable {
 
     private static SectorAllocator newSectorAllocator() {
         final SectorAllocator newSectorAllocation = new SectorAllocator(MAX_NORMAL_SECTOR_OFFSET, MAX_NORMAL_SECTOR_LENGTH);
-        if (!newSectorAllocation.tryAllocateDirect(FILE_HEADER_SECTOR, FILE_HEADER_TOTAL_SECTORS, false)) {
+        if (!newSectorAllocation.tryAllocateDirect(FILE_HEADER_SECTOR, FileHeader.FILE_HEADER_TOTAL_SECTORS, false)) {
             throw new IllegalStateException("Cannot allocate initial header");
         }
         return newSectorAllocation;
@@ -482,7 +483,7 @@ public final class SectorFile implements Closeable {
             final ByteBuffer buffer = scopedChoices.t1m().acquireDirectBuffer();
 
             final long fileSectors = (this.channel.size() + (long)(SECTOR_SIZE - 1)) >>> SECTOR_SHIFT;
-            for (long i = (long)(FILE_HEADER_SECTOR + FILE_HEADER_TOTAL_SECTORS); i <= Math.min(fileSectors, (long)MAX_NORMAL_SECTOR_OFFSET); ++i) {
+            for (long i = (long)(FILE_HEADER_SECTOR + FileHeader.FILE_HEADER_TOTAL_SECTORS); i <= Math.min(fileSectors, (long)MAX_NORMAL_SECTOR_OFFSET); ++i) {
                 buffer.limit(DataHeader.DATA_HEADER_LENGTH);
                 buffer.position(0);
 
@@ -832,7 +833,7 @@ public final class SectorFile implements Closeable {
     }
 
     private void writeFileHeader(final ByteBuffer ioBuffer) throws IOException {
-        ioBuffer.limit(FILE_HEADER_SIZE_BYTES);
+        ioBuffer.limit(FileHeader.FILE_HEADER_SIZE_BYTES);
         ioBuffer.position(0);
 
         this.fileHeader.write(ioBuffer.duplicate());
@@ -849,8 +850,8 @@ public final class SectorFile implements Closeable {
             this.typeHeaders.clear();
             this.fileHeader.reset();
 
+            buffer.limit(FileHeader.FILE_HEADER_SIZE_BYTES);
             buffer.position(0);
-            buffer.limit(FILE_HEADER_SIZE_BYTES);
 
             final long fileLengthSectors = (this.channel.size() + (SECTOR_SIZE - 1L)) >> SECTOR_SHIFT;
 
@@ -943,8 +944,7 @@ public final class SectorFile implements Closeable {
                         LOGGER.error("File '" + this.file.getAbsolutePath() + "' has negative (o:" + locationOffset + ",l:" + locationLength + ") length for type " + this.debugType(i) + " located at " + this.getAbsoluteCoordinate(k));
                         needsRecalculation = true;
                         continue;
-                    } else if (locationOffset > fileLengthSectors || (locationOffset + locationLength) > fileLengthSectors ||
-                               (locationOffset + locationLength) < 0) {
+                    } else if ((locationOffset + locationLength) > fileLengthSectors || (locationOffset + locationLength) < 0) {
                         LOGGER.error("File '" + this.file.getAbsolutePath() + "' has sector allocation (o:" + locationOffset + ",l:" + locationLength + ") pointing outside file for type " + this.debugType(i) + " located at " + this.getAbsoluteCoordinate(k));
                         needsRecalculation = true;
                         continue;

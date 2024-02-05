@@ -108,7 +108,7 @@ public final class ConvertWorld {
                 continue;
             }
             try {
-                byId.put(type.getNewId(), new RegionFile(file, unscopedBufferChoices));
+                byId.put(type.getNewId(), new RegionFile(file, sectionX, sectionZ, unscopedBufferChoices));
             } catch (final IOException ex) {
                 synchronized (System.err) {
                     System.err.println("Failed to open regionfile " + file.getAbsolutePath() + ": ");
