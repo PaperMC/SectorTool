@@ -23,6 +23,7 @@ public final class FuzzProfilingTest {
     }
 
     public static final String OUTPUT_DIR_PROPERTY = "output";
+    private static final SectorFileCompressionType COMPRESSION_TYPE = SectorFileCompressionType.ZSTD;
 
     private static File TEST_DIR;
 
@@ -144,9 +145,8 @@ public final class FuzzProfilingTest {
         try {
             final File file = new File(TEST_DIR, SectorFile.getFileName(sectionX, sectionZ));
 
-            // force NONE, random data is hard to compress
             final SectorFile sectorfile = new SectorFile(
-                file, sectionX, sectionZ, SectorFileCompressionType.NONE, BUFFER_CHOICES, FUZZ_TYPES, 0
+                file, sectionX, sectionZ, COMPRESSION_TYPE, BUFFER_CHOICES, FUZZ_TYPES, 0
             );
 
             if ((flags & FLAGS_FORCE_BAD_SECTOR) != 0) {

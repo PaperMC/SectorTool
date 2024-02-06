@@ -61,6 +61,35 @@ public abstract class ByteBufferOutputStream extends OutputStream {
         }
     }
 
+    public void write(final ByteBuffer buffer) throws IOException {
+        if (this.buffer == null) {
+            throw new IOException("Closed stream");
+        }
+
+        int off = buffer.position();
+        int remaining = buffer.remaining();
+
+        while (remaining > 0) {
+            final int maxWrite = Math.min(this.buffer.remaining(), remaining);
+
+            if (maxWrite == 0) {
+                this.buffer = this.flush(this.buffer);
+                continue;
+            }
+
+            final int thisOffset = this.buffer.position();
+
+            this.buffer.put(thisOffset, buffer, off, maxWrite);
+
+            off += maxWrite;
+            remaining -= maxWrite;
+
+            // update positions in case flush() throws or needs to be called
+            this.buffer.position(thisOffset + maxWrite);
+            buffer.position(off);
+        }
+    }
+
     @Override
     public void flush() throws IOException {
         if (this.buffer == null) {

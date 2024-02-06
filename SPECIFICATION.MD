@@ -181,8 +181,8 @@ overworld block data:
 
 | test                     | GZIP   | DEFLATE | LZ4   | ZSTD   |
 |--------------------------|--------|---------|-------|--------|
-| avg compress time (µs)   | 937.04 | 913.89  | 58.35 | 233.37 |
-| avg decompress time (µs) | 115.56 | 124.67  | 26.74 | 60.71  |
+| avg compress time (µs)   | 934.38 | 909.19  | 57.63 | 190.95 |
+| avg decompress time (µs) | 114.39 | 123.87  | 26.83 | 53.42  |
 | avg compress ratio       | 7.43   | 7.44    | 4.35  | 6.76   |
 
 ZSTD shows the best tradeoff between speed and compression ratio, and as a result it is 

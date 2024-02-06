@@ -1365,7 +1365,7 @@ public final class SectorFile implements Closeable {
         }
 
         // force disk updates if required
-        if ((writeFlags & WRITE_FLAG_SYNC) != 0) {
+        if (!this.sync && (writeFlags & WRITE_FLAG_SYNC) != 0) {
             this.channel.force(false);
         }
 

@@ -2,6 +2,10 @@ package ca.spottedleaf.regioncompresstest.test;
 
 import ca.spottedleaf.io.buffer.BufferTracker;
 import ca.spottedleaf.io.buffer.ZstdCtxManager;
+import ca.spottedleaf.io.region.io.bytebuffer.ByteBufferInputStream;
+import ca.spottedleaf.io.region.io.bytebuffer.ByteBufferOutputStream;
+import ca.spottedleaf.io.region.io.zstd.ZSTDInputStream;
+import ca.spottedleaf.io.region.io.zstd.ZSTDOutputStream;
 import ca.spottedleaf.io.stream.compat.FromJavaInputStream;
 import ca.spottedleaf.io.stream.compat.FromJavaOutputStream;
 import ca.spottedleaf.io.stream.databuffered.AbstractBufferedDataByteBufferInputStream;
@@ -218,6 +222,62 @@ public final class RunProfilingTest {
 
                     int r;
                     while ((r = in.read(tmp, 0, tmp.capacity())) >= 0) {
+                        if (r == 0) {
+                            throw new IllegalStateException();
+                        }
+                        size += r;
+                    }
+
+                    return size;
+                } finally {
+                    in.close();
+                }
+            }
+        },
+        LEAF2_ZSTD("leaf2-zstd") {
+            @Override
+            public void compress(final BufferTracker bufferTracker, final ZstdCtxManager zstd, final byte[] data, final int off, final int len,
+                                 final ByteArrayOutputStream vout) throws IOException {
+                final ZSTDOutputStream out = new ZSTDOutputStream(
+                        bufferTracker.acquireDirectBuffer(), bufferTracker.acquireDirectBuffer(),
+                        zstd.acquireCompress(), zstd::returnCompress,
+                        /* This looks bad, but SectorFile always provides a ByteBufferOutputStream as a parameter, so no hacks are needed in practice */
+                        new ByteBufferOutputStream(ByteBuffer.wrap(bufferTracker.acquireJavaBuffer())) {
+                            @Override
+                            protected ByteBuffer flush(final ByteBuffer current) throws IOException {
+                                vout.write(current.array(), 0, current.position());
+
+                                current.limit(current.capacity());
+                                current.position(0);
+
+                                return current;
+                            }
+                        }
+                );
+
+                try {
+                    out.write(data, off, len);
+                } finally {
+                    out.close();
+                }
+            }
+
+            @Override
+            public int decompress(final BufferTracker bufferTracker, final ZstdCtxManager zstd, final byte[] data, final int off, final int len) throws IOException {
+                final ZSTDInputStream in = new ZSTDInputStream(
+                        bufferTracker.acquireDirectBuffer(), bufferTracker.acquireDirectBuffer(), zstd.acquireDecompress(),
+                        zstd::returnDecompress,
+                        /* This looks bad, but SectorFile always provides a ByteBufferInputStream as a parameter, so no hacks are needed in practice */
+                        new ByteBufferInputStream(ByteBuffer.wrap(data, off, len))
+                );
+
+                try {
+                    final byte[] tmp = bufferTracker.acquireJavaBuffer();
+
+                    int size = 0;
+
+                    int r;
+                    while ((r = in.read(tmp, 0, tmp.length)) >= 0) {
                         if (r == 0) {
                             throw new IllegalStateException();
                         }
