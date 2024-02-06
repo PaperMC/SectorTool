@@ -1,6 +1,7 @@
 package ca.spottedleaf.regioncompresstest.test;
 
 import ca.spottedleaf.io.buffer.BufferTracker;
+import ca.spottedleaf.io.region.io.java.SimpleBufferedOutputStream;
 import ca.spottedleaf.io.stream.databuffered.AbstractBufferedDataByteBufferInputStream;
 import ca.spottedleaf.io.stream.databuffered.wrapped.WrappedBufferedDataByteBufferInputStream;
 import ca.spottedleaf.io.stream.file.FileChannelByteBufferInputStream;
@@ -9,6 +10,7 @@ import ca.spottedleaf.regioncompresstest.Main;
 import it.unimi.dsi.fastutil.doubles.DoubleArrayList;
 import it.unimi.dsi.fastutil.doubles.DoubleIterator;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -283,8 +285,8 @@ public final class ReadProfilingTest {
             psvFile.delete();
             psvFile.createNewFile();
 
-            try (final PrintStream tsv = new PrintStream(psvFile, StandardCharsets.UTF_8)) {
-                printHistogram(tsv, palette, datas.toArray(new Summary[0]));
+            try (final PrintStream psv = new PrintStream(new SimpleBufferedOutputStream(new FileOutputStream(psvFile)), false, StandardCharsets.UTF_8)) {
+                printHistogram(psv, palette, datas.toArray(new Summary[0]));
             }
         } catch (final IOException ex) {
             throw new RuntimeException(ex);
