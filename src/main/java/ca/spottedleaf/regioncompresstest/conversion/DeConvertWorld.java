@@ -6,7 +6,7 @@ import ca.spottedleaf.io.region.SectorFileCompressionType;
 import ca.spottedleaf.io.buffer.BufferChoices;
 import ca.spottedleaf.regioncompresstest.Main;
 import ca.spottedleaf.regioncompresstest.storage.RegionFile;
-import it.unimi.dsi.fastutil.ints.Int2ObjectLinkedOpenHashMap;
+import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.util.LinkedHashSet;
@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 
-public final class ConvertWorld {
+public final class DeConvertWorld {
 
     private static final String[] SUBDIRS = new String[] {
             "",
@@ -26,7 +26,7 @@ public final class ConvertWorld {
             "DIM1"
     };
 
-    private static final String TARGET_DIRECTORY = "sectors";
+    private static final String SOURCE_DIRECTORY = "sectors";
 
     public static final String INPUT_PROPERTY = "input";
     public static final String TYPE_OUTPUT_PROPERTY = "compress";
@@ -39,7 +39,7 @@ public final class ConvertWorld {
             public Thread newThread(final Runnable run) {
                 final Thread ret = new Thread(run);
 
-                ret.setName("Conversion worker #" + this.idGenerator.getAndIncrement());
+                ret.setName("DeConversion worker #" + this.idGenerator.getAndIncrement());
                 ret.setUncaughtExceptionHandler((final Thread thread, final Throwable ex) -> {
                     synchronized (System.err) {
                         System.err.println("Thread " + thread.getName() + " threw uncaught exception: ");
@@ -59,12 +59,12 @@ public final class ConvertWorld {
         }
     }
 
-    private static void submitToExecutor(final ExecutorService executor, final File dimDirectory, final String regionName,
-                                         final SectorFileCompressionType compressionType, final BufferChoices unscopedBufferChoices,
+    private static void submitToExecutor(final ExecutorService executor, final File dimDirectory, final String sectorName,
+                                         final int compressionType, final BufferChoices unscopedBufferChoices,
                                          final AtomicInteger concurrentTracker, final Thread wakeup, final int threshold) {
-        // old format is r.<x>.<z>.mca
+        // new format is <x>.<z>.mcsl
 
-        final String[] coords = regionName.substring(2, regionName.length() - RegionFile.ANVIL_EXTENSION.length()).split("\\.");
+        final String[] coords = sectorName.substring(0, sectorName.length() - SectorFile.FILE_EXTENSION.length()).split("\\.");
 
         final int sectionX;
         final int sectionZ;
@@ -73,48 +73,28 @@ public final class ConvertWorld {
             sectionX = Integer.parseInt(coords[0]);
             sectionZ = Integer.parseInt(coords[1]);
         } catch (final NumberFormatException ex) {
-            System.err.println("Invalid region name: " + regionName);
+            System.err.println("Invalid sector name: " + sectorName);
             return;
         }
 
-        final File output = new File(
-                new File(dimDirectory, TARGET_DIRECTORY),
+        final File input = new File(
+                new File(dimDirectory, SOURCE_DIRECTORY),
                 SectorFile.getFileName(sectionX, sectionZ)
         );
 
-        final SectorFile outputFile;
+        final SectorFile inputFile;
         try {
-            outputFile = new SectorFile(
-                    output, sectionX, sectionZ, compressionType, unscopedBufferChoices,
+            inputFile = new SectorFile(
+                    input, sectionX, sectionZ, SectorFileCompressionType.GZIP, unscopedBufferChoices,
                     MinecraftRegionFileType.getTranslationTable(),
-                    0
+                    SectorFile.OPEN_FLAGS_READ_ONLY
             );
         } catch (final IOException ex) {
             synchronized (System.err) {
-                System.err.println("Failed to create sector file " + output.getAbsolutePath() + ": ");
+                System.err.println("Failed to create sector file " + input.getAbsolutePath() + ": ");
                 ex.printStackTrace(System.err);
             }
             return;
-        }
-
-        final Int2ObjectLinkedOpenHashMap<RegionFile> byId = new Int2ObjectLinkedOpenHashMap<>();
-
-        for (final MinecraftRegionFileType type : MinecraftRegionFileType.getAll()) {
-            final File file = new File(
-                    new File(dimDirectory, type.getFolder()),
-                    regionName
-            );
-            if (!file.isFile()) {
-                continue;
-            }
-            try {
-                byId.put(type.getNewId(), new RegionFile(file, sectionX, sectionZ, unscopedBufferChoices, true));
-            } catch (final IOException ex) {
-                synchronized (System.err) {
-                    System.err.println("Failed to open regionfile " + file.getAbsolutePath() + ": ");
-                    ex.printStackTrace(System.err);
-                }
-            }
         }
 
         concurrentTracker.getAndIncrement();
@@ -125,67 +105,67 @@ public final class ConvertWorld {
             public void run() {
                 try (final BufferChoices readScope = unscopedBufferChoices.scope()) {
                     final RegionFile.CustomByteArrayOutputStream decompressed = new RegionFile.CustomByteArrayOutputStream(readScope.t1m().acquireJavaBuffer());
+                    final byte[] buffer = readScope.t16k().acquireJavaBuffer();
 
-                    for (int i = 0; i < 32 * 32; ++i) {
-                        final int chunkX = (i & 31);
-                        final int chunkZ = ((i >>> 5) & 31);
+                    for (final MinecraftRegionFileType type : MinecraftRegionFileType.getAll()) {
+                        final File file = new File(
+                                new File(dimDirectory, type.getFolder()),
+                                "r." + sectionX + "." + sectionZ + ".mca"
+                        );
 
-                        for (final MinecraftRegionFileType type : MinecraftRegionFileType.getAll()) {
-                            final RegionFile regionFile = byId.get(type.getNewId());
-                            if (regionFile == null) {
-                                continue;
+                        final RegionFile regionFile;
+                        try {
+                            regionFile = new RegionFile(file, sectionX, sectionZ, unscopedBufferChoices, false);
+                        } catch (final IOException ex) {
+                            synchronized (System.err) {
+                                System.err.println("Failed to close regionfile " + file.getAbsolutePath() + ": ");
+                                ex.printStackTrace(System.err);
+                            }
+                            continue;
+                        }
+
+                        for (int i = 0; i < (32*32); ++i) {
+                            final int chunkX = (i & 31);
+                            final int chunkZ = ((i >>> 5) & 31);
+
+                            try (final BufferChoices readChoices = unscopedBufferChoices.scope();
+                                 final DataInputStream is = inputFile.read(readChoices, chunkX, chunkZ, type.getNewId(), SectorFile.FULL_VALIDATION_FLAGS);) {
+
+                                if (is == null) {
+                                    regionFile.delete(chunkX, chunkZ, unscopedBufferChoices);
+                                    continue;
+                                }
+
+                                decompressed.reset();
+
+                                int r;
+                                while ((r = is.read(buffer)) >= 0) {
+                                    decompressed.write(buffer, 0, r);
+                                }
+                            } catch (final IOException ex) {
+                                synchronized (System.err) {
+                                    System.err.println(
+                                            "Failed to read " + type.getName() + " (" + chunkX + "," + chunkZ
+                                                    + ") from sectorfile " + input.getAbsolutePath() + ": ");
+                                    ex.printStackTrace(System.err);
+                                }
                             }
 
-                            decompressed.reset();
-
-                            boolean read = false;
                             try {
-                                read = regionFile.read(chunkX, chunkZ, readScope, decompressed);
+                                regionFile.write(
+                                        chunkX, chunkZ, unscopedBufferChoices, compressionType,
+                                        decompressed.getBuffer(), 0, decompressed.size()
+                                );
                             } catch (final IOException ex) {
                                 synchronized (System.err) {
                                     System.err.println(
-                                            "Failed to read " + type.getName() + " (" + chunkX + "," + chunkZ + ") from regionfile " +
-                                                    regionFile.file.getAbsolutePath() + ": ");
-                                    ex.printStackTrace(System.err);
-                                }
-                            }
-
-                            if (!read) {
-                                continue;
-                            }
-
-                            try (final BufferChoices writeScope = readScope.scope();) {
-                               final SectorFile.SectorFileOutput output = outputFile.write(
-                                       writeScope, chunkX, chunkZ, type.getNewId(), null, 0
-                               );
-                               try {
-                                   decompressed.writeTo(output.outputStream());
-                                   output.outputStream().close();
-                               } finally {
-                                   output.rawOutput().freeResources();
-                               }
-                            } catch (final IOException ex) {
-                                synchronized (System.err) {
-                                    System.err.println(
-                                            "Failed to write " + type.getName() + " (" + chunkX + "," + chunkZ + ") from regionfile " +
-                                                    regionFile.file.getAbsolutePath() + " to sectorfile " + output.getAbsolutePath() + ": ");
+                                            "Failed to write " + type.getName() + " (" + chunkX + "," + chunkZ + ") to regionfile " +
+                                                    regionFile.file.getAbsolutePath() + " from sectorfile " + file.getAbsolutePath() + ": ");
                                     ex.printStackTrace(System.err);
                                 }
                             }
                         }
-                    }
-                } finally {
-                    decrementTracker(concurrentTracker, wakeup, threshold);
 
-                    try {
-                        outputFile.close();
-                    } catch (final IOException ex) {
-                        synchronized (System.err) {
-                            System.err.println("Failed to close sectorfile " + outputFile.file.getAbsolutePath() + ": ");
-                            ex.printStackTrace(System.err);
-                        }
-                    }
-                    for (final RegionFile regionFile : byId.values()) {
                         try {
                             regionFile.close();
                         } catch (final IOException ex) {
@@ -195,9 +175,20 @@ public final class ConvertWorld {
                             }
                         }
                     }
+                } finally {
+                    decrementTracker(concurrentTracker, wakeup, threshold);
+
+                    try {
+                        inputFile.close();
+                    } catch (final IOException ex) {
+                        synchronized (System.err) {
+                            System.err.println("Failed to close sectorfile " + inputFile.file.getAbsolutePath() + ": ");
+                            ex.printStackTrace(System.err);
+                        }
+                    }
                 }
 
-                System.out.println("Processed sectorfile " + outputFile.file.getAbsolutePath());
+                System.out.println("Processed sectorfile " + inputFile.file.getAbsolutePath());
             }
         }
 
@@ -207,19 +198,19 @@ public final class ConvertWorld {
     public static void run(final String[] args) {
         final String inputDirectoryPath = System.getProperty(INPUT_PROPERTY);
         if (inputDirectoryPath == null) {
-            System.err.println("Must specify input (directory or region file) as -D" + INPUT_PROPERTY + "=<path>");
+            System.err.println("Must specify base world directory as -D" + INPUT_PROPERTY + "=<path>");
             return;
         }
         final File inputDir = new File(inputDirectoryPath);
         if (!inputDir.isDirectory()) {
-            System.err.println("Specified input is not a directory or .mca file");
+            System.err.println("Specified input is not a directory");
             return;
         }
 
-        final SectorFileCompressionType compressionType = SectorFileCompressionType.getById(Integer.getInteger(TYPE_OUTPUT_PROPERTY, -1));
-        if (compressionType == null) {
+        final int compressionType = Integer.getInteger(TYPE_OUTPUT_PROPERTY, -1);
+        if (compressionType < 0 || compressionType > 4) {
             System.err.println("Specified compression type is absent (-D" + TYPE_OUTPUT_PROPERTY + "=<id>) or invalid");
-            System.err.println("Select one from: 1 (GZIP), 2 (DEFLATE), 3 (NONE), 4 (LZ4), 5 (ZSTD)");
+            System.err.println("Select one from: 1 (GZIP), 2 (DEFLATE), 3 (NONE), 4 (LZ4)");
             return;
         }
 
@@ -233,38 +224,29 @@ public final class ConvertWorld {
         final int waitThreshold = targetConcurrent / 2;
 
         for (final String subdir : SUBDIRS) {
-            System.out.println("Converting dimension " + (subdir.isEmpty() ? "overworld" : subdir));
+            System.out.println("DeConverting dimension " + (subdir.isEmpty() ? "overworld" : subdir));
 
             final File dimDirectory = subdir.isEmpty() ? inputDir : new File(inputDir, subdir);
 
-            if (!dimDirectory.isDirectory()) {
+            final File sectorDir = new File(dimDirectory, SOURCE_DIRECTORY);
+
+            if (!dimDirectory.isDirectory() || !sectorDir.isDirectory()) {
                 System.out.println("Skipping dimension " + (subdir.isEmpty() ? "overworld" : subdir) + ", it is empty");
                 continue;
             }
 
             final Set<String> toConvert = new LinkedHashSet<>();
 
-            for (final MinecraftRegionFileType type : MinecraftRegionFileType.getAll()) {
-                final File regionDir = new File(dimDirectory, type.getFolder());
-
-                if (!regionDir.isDirectory()) {
-                    System.out.println("Skipping type " + type.getFolder() + ", it is empty");
-                    continue;
-                }
-
-                for (final String name : regionDir.list((final File dir, final String name) -> {
-                    return name.endsWith(RegionFile.ANVIL_EXTENSION);
-                })) {
-                    toConvert.add(name);
-                }
+            for (final String name : sectorDir.list((final File dir, final String name) -> {
+                return name.endsWith(SectorFile.FILE_EXTENSION);
+            })) {
+                toConvert.add(name);
             }
 
             if (toConvert.isEmpty()) {
-                System.out.println("No regions in " + dimDirectory.getAbsolutePath());
+                System.out.println("No regions in " + sectorDir.getAbsolutePath());
                 continue;
             }
-
-            new File(dimDirectory, TARGET_DIRECTORY).mkdir();
 
             for (final String convert : toConvert) {
                 submitToExecutor(executors, dimDirectory, convert, compressionType, bufferChoices, concurrentExecutions, Thread.currentThread(), waitThreshold);
@@ -280,7 +262,7 @@ public final class ConvertWorld {
                 LockSupport.park("Awaiting finish");
             }
 
-            System.out.println("Converted dimension " + (subdir.isEmpty() ? "overworld" : subdir));
+            System.out.println("DeConverted dimension " + (subdir.isEmpty() ? "overworld" : subdir));
         }
 
         while (concurrentExecutions.get() > 0) {

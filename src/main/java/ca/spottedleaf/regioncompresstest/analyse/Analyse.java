@@ -109,7 +109,7 @@ public final class Analyse {
                 continue;
             }
             try {
-                byId.put(type.getNewId(), new RegionFile(file, sectionX, sectionZ, unscopedBufferChoices));
+                byId.put(type.getNewId(), new RegionFile(file, sectionX, sectionZ, unscopedBufferChoices, true));
             } catch (final IOException ex) {
                 synchronized (System.err) {
                     System.err.println("Failed to open regionfile " + file.getAbsolutePath() + ": ");
@@ -173,7 +173,7 @@ public final class Analyse {
         }
         final File inputDir = new File(inputDirectoryPath);
         if (!inputDir.isDirectory()) {
-            System.err.println("Specified input is not a directory or .mca file");
+            System.err.println("Specified input is not a directory");
             return;
         }
 

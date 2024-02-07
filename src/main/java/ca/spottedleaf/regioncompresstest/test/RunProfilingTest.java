@@ -445,7 +445,7 @@ public final class RunProfilingTest {
 
         final RegionFile regionFile;
         try  {
-            regionFile = new RegionFile(file, sectionX, sectionZ, unscopedBufferChoices);
+            regionFile = new RegionFile(file, sectionX, sectionZ, unscopedBufferChoices, true);
         } catch (final IOException ex) {
             synchronized (System.err) {
                 System.err.println("Failed to open regionfile " + file.getAbsolutePath() + ": ");

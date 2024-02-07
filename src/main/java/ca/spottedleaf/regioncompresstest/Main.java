@@ -2,6 +2,7 @@ package ca.spottedleaf.regioncompresstest;
 
 import ca.spottedleaf.regioncompresstest.analyse.Analyse;
 import ca.spottedleaf.regioncompresstest.conversion.ConvertWorld;
+import ca.spottedleaf.regioncompresstest.conversion.DeConvertWorld;
 import ca.spottedleaf.regioncompresstest.conversion.VerifyWorld;
 import ca.spottedleaf.regioncompresstest.fuzz.FuzzProfilingTest;
 import ca.spottedleaf.regioncompresstest.test.ReadProfilingTest;
@@ -62,6 +63,10 @@ public class Main {
                 Analyse.run(args);
                 break;
             }
+            case DECONVERT: {
+                DeConvertWorld.run(args);
+                break;
+            }
 
             default: {
                 throw new IllegalStateException("Unhandled operation: " + OPERATION);
@@ -73,7 +78,7 @@ public class Main {
 
     public static enum Operation {
         TEST("test"), READ("read"), CONVERT("conv"), VERIFY("verify"),
-        FUZZ("fuzz"), ANALYSE("analyse");
+        FUZZ("fuzz"), ANALYSE("analyse"), DECONVERT("deconv");
 
         private static final Map<String, Operation> BY_PROPERTY_LC = new HashMap<>();
 

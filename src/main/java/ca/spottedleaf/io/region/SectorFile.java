@@ -37,6 +37,8 @@ import java.util.Random;
 public final class SectorFile implements Closeable {
 
     private static final XXHashFactory XXHASH_FACTORY = XXHashFactory.fastestInstance();
+    // Java instance is used for streaming hash instances, as streaming hash instances do not provide bytebuffer API
+    // Native instances would use GetPrimitiveArrayCritical and prevent GC on G1
     private static final XXHashFactory XXHASH_JAVA_FACTORY = XXHashFactory.fastestJavaInstance();
     private static final XXHash64 XXHASH64 = XXHASH_FACTORY.hash64();
     // did not find a use to change this from default, but just in case
@@ -452,11 +454,11 @@ public final class SectorFile implements Closeable {
         // The headers are determined as incorrect, so we are going to rebuild it from the file
         final SectorAllocator newSectorAllocation = newSectorAllocator();
 
-        final File backup = new File(this.file.getParentFile(), this.file.getName() + "." + new Random().nextLong() + ".backup");
-        if ((flags & RECALCULATE_FLAGS_NO_LOG) == 0) {
-            LOGGER.info("Making backup of '" + this.file.getAbsolutePath() + "' to '" + backup.getAbsolutePath() + "'");
-        }
         if ((flags & RECALCULATE_FLAGS_NO_BACKUP) == 0) {
+            final File backup = new File(this.file.getParentFile(), this.file.getName() + "." + new Random().nextLong() + ".backup");
+            if ((flags & RECALCULATE_FLAGS_NO_LOG) == 0) {
+                LOGGER.info("Making backup of '" + this.file.getAbsolutePath() + "' to '" + backup.getAbsolutePath() + "'");
+            }
             this.makeBackup(backup);
         }
 
@@ -1090,7 +1092,7 @@ public final class SectorFile implements Closeable {
             return null;
         }
         this.recalculateFile(scopedBufferChoices, 0);
-        // recalculate ensures valid data
+        // recalculate ensures valid data, so there will be no recursion
         return this.read(scopedBufferChoices, buffer, localX, localZ, type, readFlags);
     }
 
@@ -1169,7 +1171,7 @@ public final class SectorFile implements Closeable {
             return this.tryRecalculate("mismatch of expected coordinates and data header coordinates", scopedBufferChoices, buffer, localX, localZ, type, readFlags);
         }
 
-        // this is accurate for our implementations
+        // this is accurate for our implementations of BufferedFileChannelInputStream / ByteBufferInputStream
         final int bytesAvailable = rawIn.available();
 
         if (external) {
@@ -1611,19 +1613,9 @@ public final class SectorFile implements Closeable {
         }
 
         try {
-            if (!this.readOnly) {
-                final int maxSector = this.sectorAllocator.getLastAllocatedBlock();
-                if (maxSector >= 0) {
-                    final long maxLength = ((long)maxSector << SECTOR_SHIFT) + (long)SECTOR_SIZE; // maxSector is inclusive
-                    this.channel.truncate(maxLength);
-                }
-            }
+            this.flush();
         } finally {
-            try {
-                this.flush();
-            } finally {
-                this.channel.close();
-            }
+            this.channel.close();
         }
     }
 

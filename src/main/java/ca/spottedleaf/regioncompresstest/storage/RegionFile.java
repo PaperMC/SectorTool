@@ -1,26 +1,35 @@
 package ca.spottedleaf.regioncompresstest.storage;
 
+import ca.spottedleaf.io.region.SectorFile;
 import ca.spottedleaf.io.region.io.bytebuffer.BufferedFileChannelInputStream;
 import ca.spottedleaf.io.region.io.bytebuffer.ByteBufferInputStream;
 import ca.spottedleaf.io.buffer.BufferChoices;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import net.jpountz.lz4.LZ4BlockInputStream;
+import net.jpountz.lz4.LZ4BlockOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.EOFException;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.zip.DeflaterOutputStream;
 import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 import java.util.zip.InflaterInputStream;
 
 /**
- * Read only support of the region file format used by Minecraft
+ * Read/write support of the region file format used by Minecraft
  */
 public final class RegionFile implements Closeable {
 
@@ -49,31 +58,61 @@ public final class RegionFile implements Closeable {
     public final int sectionZ;
 
     private FileChannel channel;
+    private final boolean readOnly;
+    private final SectorFile.SectorAllocator sectorAllocator = new SectorFile.SectorAllocator(getLocationOffset(-1) - 1, getLocationSize(-1));
+    {
+        this.sectorAllocator.allocate(2, false);
+    }
 
-    public RegionFile(final File file, final int sectionX, final int sectionZ, final BufferChoices unscopedBufferChoices) throws IOException {
+    public RegionFile(final File file, final int sectionX, final int sectionZ, final BufferChoices unscopedBufferChoices,
+                      final boolean readOnly) throws IOException {
         this.file = file;
         this.sectionX = sectionX;
         this.sectionZ = sectionZ;
-        this.channel = FileChannel.open(file.toPath(), StandardOpenOption.READ);
+        this.readOnly = readOnly;
 
-        if (this.channel.size() < (2L * (long)SECTOR_SIZE)) {
-            System.err.println("Truncated header in file: " + file.getAbsolutePath());
-            return;
+        if (readOnly) {
+            this.channel = FileChannel.open(file.toPath(), StandardOpenOption.READ);
+        } else {
+            file.getParentFile().mkdirs();
+            this.channel = FileChannel.open(file.toPath(), StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE);
         }
 
-        try (final BufferChoices scopedBufferChoices = unscopedBufferChoices.scope()) {
-            final ByteBuffer headerBuffer = scopedBufferChoices.t16k().acquireDirectBuffer();
+        final long size = this.channel.size();
 
-            headerBuffer.order(ByteOrder.BIG_ENDIAN);
-            headerBuffer.limit(2 * SECTOR_SIZE);
-            headerBuffer.position(0);
-            this.channel.read(headerBuffer, 0L);
-            headerBuffer.flip();
+        if (size != 0L) {
+            if (size < (2L * (long)SECTOR_SIZE)) {
+                System.err.println("Truncated header in file: " + file.getAbsolutePath());
+                return;
+            }
 
-            final IntBuffer headerIntBuffer = headerBuffer.asIntBuffer();
+            try (final BufferChoices scopedBufferChoices = unscopedBufferChoices.scope()) {
+                final ByteBuffer headerBuffer = scopedBufferChoices.t16k().acquireDirectBuffer();
 
-            headerIntBuffer.get(0, this.header, 0, SECTOR_SIZE / INT_SIZE);
-            headerIntBuffer.get(0 + SECTOR_SIZE / INT_SIZE, this.timestamps, 0, SECTOR_SIZE / INT_SIZE);
+                headerBuffer.order(ByteOrder.BIG_ENDIAN);
+                headerBuffer.limit(2 * SECTOR_SIZE);
+                headerBuffer.position(0);
+                this.channel.read(headerBuffer, 0L);
+                headerBuffer.flip();
+
+                final IntBuffer headerIntBuffer = headerBuffer.asIntBuffer();
+
+                headerIntBuffer.get(0, this.header, 0, SECTOR_SIZE / INT_SIZE);
+                headerIntBuffer.get(0 + SECTOR_SIZE / INT_SIZE, this.timestamps, 0, SECTOR_SIZE / INT_SIZE);
+
+                for (int i = 0; i < this.header.length; ++i) {
+                    final int location = this.header[i];
+
+                    if (location == 0) {
+                        continue;
+                    }
+
+                    if (!this.sectorAllocator.tryAllocateDirect(getLocationOffset(location), getLocationSize(location), false)) {
+                        this.header[i] = 0;
+                        System.err.println("Invalid sector allocation in regionfile '" + this.file.getAbsolutePath() + "': (" + i + "," + location + ")");
+                    }
+                }
+            }
         }
     }
 
@@ -83,6 +122,10 @@ public final class RegionFile implements Closeable {
 
     private static int getLocationOffset(final int location) {
         return location >>> 8;
+    }
+
+    private static int makeLocation(final int offset, final int size) {
+        return (offset << 8) | (size & 255);
     }
 
     public boolean has(final int x, final int z) {
@@ -111,7 +154,7 @@ public final class RegionFile implements Closeable {
 
     public AllocationStats computeStats(final BufferChoices unscopedBufferChoices, final int alternateSectorSize,
                                         final int alternateOverhead) throws IOException {
-        final long fileSectors = ((this.file.length() + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT);
+        final long fileSectors = (this.file.length() + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT;
 
         long allocatedSectors = Math.min(fileSectors, 2L);
         long alternateAllocatedSectors = 0L;
@@ -267,6 +310,125 @@ public final class RegionFile implements Closeable {
         }
     }
 
+    private void writeHeader(final BufferChoices unscopedBufferChoices) throws IOException {
+        try (final BufferChoices scopedBufferChoices = unscopedBufferChoices.scope()) {
+            final ByteBuffer buffer = scopedBufferChoices.t16k().acquireDirectBuffer();
+
+            buffer.limit((this.header.length + this.timestamps.length) * INT_SIZE);
+            buffer.position(0);
+
+            buffer.asIntBuffer().put(this.header).put(this.timestamps);
+
+            this.channel.write(buffer, 0L << SECTOR_SHIFT);
+        }
+    }
+
+    public void delete(final int x, final int z, final BufferChoices unscopedBufferChoices) throws IOException {
+        final int location = this.getLocation(x, z);
+        if (location == 0) {
+            return;
+        }
+
+        this.setLocation(x, z, 0);
+        this.setTimestamp(x, z, 0);
+        this.getExternalFile(x, z).delete();
+
+        this.writeHeader(unscopedBufferChoices);
+        this.sectorAllocator.freeAllocation(getLocationOffset(location), getLocationSize(location));
+    }
+
+    public void write(final int x, final int z, final BufferChoices unscopedBufferChoices, final int compressType,
+                      final byte[] data, final int off, final int len) throws IOException {
+        try (final BufferChoices scopedBufferChoices = unscopedBufferChoices.scope()) {
+            final CustomByteArrayOutputStream rawStream = new CustomByteArrayOutputStream(scopedBufferChoices.t1m().acquireJavaBuffer());
+
+            for (int i = 0; i < (INT_SIZE + BYTE_SIZE); ++i) {
+                rawStream.write(0);
+            }
+
+            final OutputStream out;
+            switch (compressType) {
+                case 1: { // GZIP
+                    out = new GZIPOutputStream(rawStream);
+                    break;
+                }
+                case 2: { // DEFLATE
+                    out = new DeflaterOutputStream(rawStream);
+                    break;
+                }
+                case 3: { // NONE
+                    out = rawStream;
+                    break;
+                }
+                case 4: { // LZ4
+                    out = new LZ4BlockOutputStream(rawStream);
+                    break;
+                }
+                default: {
+                    throw new IOException("Unknown type: " + compressType);
+                }
+            }
+
+            out.write(data, off, len);
+            out.close();
+
+            ByteBuffer.wrap(rawStream.getBuffer(), 0, rawStream.size())
+                    .putInt(0, rawStream.size() - INT_SIZE)
+                    .put(INT_SIZE, (byte)compressType);
+
+            final int requiredSectors = (rawStream.size() + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT;
+            final ByteBuffer write;
+
+            if (requiredSectors <= 255) {
+                write = ByteBuffer.wrap(rawStream.getBuffer(), 0, rawStream.size());
+            } else {
+                write = ByteBuffer.allocate(INT_SIZE + BYTE_SIZE);
+                write.putInt(0, 1);
+                write.put(INT_SIZE, (byte)(128 | compressType));
+            }
+
+            final int internalSectors = (write.remaining() + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT;
+            final int internalOffset = this.sectorAllocator.allocate(internalSectors, true);
+            if (internalOffset <= 0) {
+                throw new IllegalStateException("Failed to allocate internally");
+            }
+
+            this.channel.write(write, (long)internalOffset << SECTOR_SHIFT);
+
+            if (requiredSectors > 255) {
+                final File external = this.getExternalFile(x, z);
+
+                System.out.println("Storing " + rawStream.size() + " bytes to " + external.getAbsolutePath());
+
+                final File externalTmp = new File(external.getParentFile(), external.getName() + ".tmp");
+                externalTmp.delete();
+                externalTmp.createNewFile();
+                try (final FileOutputStream fout = new FileOutputStream(externalTmp)) {
+                    fout.write(rawStream.getBuffer(), INT_SIZE + BYTE_SIZE, rawStream.size() - (INT_SIZE + BYTE_SIZE));
+                }
+
+                try {
+                    Files.move(externalTmp.toPath(), external.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                } catch (final AtomicMoveNotSupportedException ex) {
+                    Files.move(externalTmp.toPath(), external.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
+            } else {
+                this.getExternalFile(x, z).delete();
+            }
+
+            final int oldLocation = this.getLocation(x, z);
+
+            this.setLocation(x, z, makeLocation(internalOffset, internalSectors));
+            this.setTimestamp(x, z, (int)(System.currentTimeMillis() / 1000L));
+
+            this.writeHeader(unscopedBufferChoices);
+
+            if (oldLocation != 0) {
+                this.sectorAllocator.freeAllocation(getLocationOffset(oldLocation), getLocationSize(oldLocation));
+            }
+        }
+    }
+
     private static int makeIndex(final int x, final int z) {
         return (x & 31) | ((z & 31) << 5);
     }
@@ -275,8 +437,16 @@ public final class RegionFile implements Closeable {
         return this.header[makeIndex(x, z)];
     }
 
+    private void setLocation(final int x, final int z, final int location) {
+        this.header[makeIndex(x, z)] = location;
+    }
+
     public int getTimestamp(final int x, final int z) {
         return this.timestamps[makeIndex(x, z)];
+    }
+
+    private void setTimestamp(final int x, final int z, final int time) {
+        this.timestamps[makeIndex(x, z)] = time;
     }
 
     @Override
@@ -284,7 +454,15 @@ public final class RegionFile implements Closeable {
         final FileChannel channel = this.channel;
         if (channel != null) {
             this.channel = null;
-            channel.close();
+            if (this.readOnly) {
+                channel.close();
+            } else {
+                try {
+                    channel.force(true);
+                } finally {
+                    channel.close();
+                }
+            }
         }
     }
 

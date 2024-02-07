@@ -111,7 +111,7 @@ public final class VerifyWorld {
                 continue;
             }
             try {
-                byId.put(type.getNewId(), new RegionFile(file, sectionX, sectionZ, unscopedBufferChoices));
+                byId.put(type.getNewId(), new RegionFile(file, sectionX, sectionZ, unscopedBufferChoices, true));
             } catch (final IOException ex) {
                 synchronized (System.err) {
                     System.err.println("Failed to open regionfile " + file.getAbsolutePath() + ": ");
