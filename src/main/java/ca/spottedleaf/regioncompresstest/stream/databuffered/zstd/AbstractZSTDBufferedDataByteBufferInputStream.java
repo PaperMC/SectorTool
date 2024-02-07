@@ -1,6 +1,6 @@
-package ca.spottedleaf.io.stream.databuffered.zstd;
+package ca.spottedleaf.regioncompresstest.stream.databuffered.zstd;
 
-import ca.spottedleaf.io.stream.databuffered.AbstractBufferedDataByteBufferInputStream;
+import ca.spottedleaf.regioncompresstest.stream.databuffered.AbstractBufferedDataByteBufferInputStream;
 import com.github.luben.zstd.Zstd;
 import com.github.luben.zstd.ZstdDecompressCtx;
 import com.github.luben.zstd.ZstdIOException;

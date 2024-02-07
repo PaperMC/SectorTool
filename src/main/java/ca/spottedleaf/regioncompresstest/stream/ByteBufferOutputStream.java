@@ -1,4 +1,4 @@
-package ca.spottedleaf.io.stream;
+package ca.spottedleaf.regioncompresstest.stream;
 
 import java.io.Closeable;
 import java.io.Flushable;

@@ -1,7 +1,8 @@
-package ca.spottedleaf.io.stream.databuffered.wrapped;
+package ca.spottedleaf.regioncompresstest.stream.databuffered.wrapped;
 
-import ca.spottedleaf.io.stream.ByteBufferInputStream;
-import ca.spottedleaf.io.stream.databuffered.AbstractBufferedDataByteBufferInputStream;
+import ca.spottedleaf.regioncompresstest.stream.ByteBufferInputStream;
+import ca.spottedleaf.regioncompresstest.stream.databuffered.AbstractBufferedDataByteBufferInputStream;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 

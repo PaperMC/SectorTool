@@ -1,6 +1,6 @@
-package ca.spottedleaf.io.stream.databuffered;
+package ca.spottedleaf.regioncompresstest.stream.databuffered;
 
-import ca.spottedleaf.io.stream.ByteBufferOutputStream;
+import ca.spottedleaf.regioncompresstest.stream.ByteBufferOutputStream;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.io.UTFDataFormatException;

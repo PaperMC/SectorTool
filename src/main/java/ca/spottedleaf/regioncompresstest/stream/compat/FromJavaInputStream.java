@@ -1,6 +1,7 @@
-package ca.spottedleaf.io.stream.compat;
+package ca.spottedleaf.regioncompresstest.stream.compat;
 
-import ca.spottedleaf.io.stream.ByteBufferInputStream;
+import ca.spottedleaf.regioncompresstest.stream.ByteBufferInputStream;
+
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;

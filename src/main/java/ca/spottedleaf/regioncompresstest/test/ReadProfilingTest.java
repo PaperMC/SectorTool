@@ -2,9 +2,9 @@ package ca.spottedleaf.regioncompresstest.test;
 
 import ca.spottedleaf.io.buffer.BufferTracker;
 import ca.spottedleaf.io.region.io.java.SimpleBufferedOutputStream;
-import ca.spottedleaf.io.stream.databuffered.AbstractBufferedDataByteBufferInputStream;
-import ca.spottedleaf.io.stream.databuffered.wrapped.WrappedBufferedDataByteBufferInputStream;
-import ca.spottedleaf.io.stream.file.FileChannelByteBufferInputStream;
+import ca.spottedleaf.regioncompresstest.stream.databuffered.AbstractBufferedDataByteBufferInputStream;
+import ca.spottedleaf.regioncompresstest.stream.databuffered.wrapped.WrappedBufferedDataByteBufferInputStream;
+import ca.spottedleaf.regioncompresstest.stream.file.FileChannelByteBufferInputStream;
 import ca.spottedleaf.io.buffer.BufferChoices;
 import ca.spottedleaf.regioncompresstest.Main;
 import it.unimi.dsi.fastutil.doubles.DoubleArrayList;
