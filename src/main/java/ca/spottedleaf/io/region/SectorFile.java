@@ -223,8 +223,13 @@ public final class SectorFile implements Closeable {
         }
     }
 
-    private static final int SECTOR_LENGTH_BITS = 11;
-    private static final int SECTOR_OFFSET_BITS = 21;
+    private static final int SECTOR_LENGTH_BITS = 10;
+    private static final int SECTOR_OFFSET_BITS = 22;
+    static {
+        if ((SECTOR_OFFSET_BITS + SECTOR_LENGTH_BITS) != 32) {
+            throw new IllegalStateException();
+        }
+    }
 
     private static final int MAX_NORMAL_SECTOR_OFFSET = (1 << SECTOR_OFFSET_BITS) - 2; // inclusive
     private static final int MAX_NORMAL_SECTOR_LENGTH = (1 << SECTOR_LENGTH_BITS) - 1;
