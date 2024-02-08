@@ -1282,7 +1282,7 @@ public final class SectorFile implements Closeable {
 
     public static record SectorFileOutput(
             /* Must run save (before close()) to cause the data to be written to the file, close() will not do this */
-            CoordinateIndexedSectorFileOutput rawOutput,
+            SectorFileOutputStream rawOutput,
             /* Close is required to run on the outputstream to free resources, but will not commit the data */
             DataOutputStream outputStream
     ) {}
@@ -1299,7 +1299,7 @@ public final class SectorFile implements Closeable {
 
         final SectorFileCompressionType useCompressionType = forceCompressionType == null ? this.compressionType : forceCompressionType;
 
-        final CoordinateIndexedSectorFileOutput output = new CoordinateIndexedSectorFileOutput(
+        final SectorFileOutputStream output = new SectorFileOutputStream(
                 scopedBufferChoices, localX, localZ, type, useCompressionType, writeFlags
         );
         final OutputStream compressedOut = useCompressionType.createOutput(scopedBufferChoices, output);
@@ -1448,7 +1448,7 @@ public final class SectorFile implements Closeable {
         LOGGER.warn("Stored externally " + external.length() + " bytes for type " + this.debugType(type) + " to file " + external.getAbsolutePath());
     }
 
-    public final class CoordinateIndexedSectorFileOutput extends ByteBufferOutputStream {
+    public final class SectorFileOutputStream extends ByteBufferOutputStream {
         private final BufferChoices scopedBufferChoices;
 
         private File externalFile;
@@ -1462,10 +1462,10 @@ public final class SectorFile implements Closeable {
         private final SectorFileCompressionType compressionType;
         private final int writeFlags;
 
-        private CoordinateIndexedSectorFileOutput(final BufferChoices scopedBufferChoices,
-                                                  final int localX, final int localZ, final int type,
-                                                  final SectorFileCompressionType compressionType,
-                                                  final int writeFlags) {
+        private SectorFileOutputStream(final BufferChoices scopedBufferChoices,
+                                       final int localX, final int localZ, final int type,
+                                       final SectorFileCompressionType compressionType,
+                                       final int writeFlags) {
             super(scopedBufferChoices.t1m().acquireDirectBuffer());
             // we use a lower limit than capacity to force flush() to be invoked before
             // the maximum internal size
