@@ -53,8 +53,8 @@ public final class SectorFile implements Closeable {
     private static final int FLOAT_SIZE  = Float.BYTES;
     private static final int DOUBLE_SIZE = Double.BYTES;
 
-    public static final String FILE_EXTENSION              = ".mcsl";
-    public static final String FILE_EXTERNAL_EXTENSION     = ".mcsle";
+    public static final String FILE_EXTENSION              = ".sf";
+    public static final String FILE_EXTERNAL_EXTENSION     = ".sfe";
     public static final String FILE_EXTERNAL_TMP_EXTENSION = FILE_EXTERNAL_EXTENSION + ".tmp";
 
     public static String getFileName(final int sectionX, final int sectionZ) {

@@ -62,7 +62,7 @@ public final class DeConvertWorld {
     private static void submitToExecutor(final ExecutorService executor, final File dimDirectory, final String sectorName,
                                          final int compressionType, final BufferChoices unscopedBufferChoices,
                                          final AtomicInteger concurrentTracker, final Thread wakeup, final int threshold) {
-        // new format is <x>.<z>.mcsl
+        // new format is <x>.<z>.sf
 
         final String[] coords = sectorName.substring(0, sectorName.length() - SectorFile.FILE_EXTENSION.length()).split("\\.");
 

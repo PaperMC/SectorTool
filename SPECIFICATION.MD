@@ -140,7 +140,7 @@ block data (i.e. not entity, not poi). The recalculation logic also requires
 fully parsing potential chunk data, as that is the only "integrity" check
 it can perform.
 
-## SectorFile Format (".mcsl", ".mcsle")
+## SectorFile Format (".sf", ".sfe")
 
 The SectorFile format is a file-based format comprised of a file header and
 data section. Its sector length is 512 bytes, and it addresses data by 
@@ -164,7 +164,7 @@ values for the type header data, which is described below. The type
 header offsets represent the offset in sectors from the beginning of the 
 file for where the type header data is stored.
 
-The sector file is named `sectionX.sectionZ.mcsl`, where sectionX and 
+The sector file is named `sectionX.sectionZ.sf`, where sectionX and 
 sectionZ represent the region coordinates of a chunk. The region coordinates
 of a chunk is simply `coordinate >> SectorFile.SECTION_SHIFT`.
 
@@ -233,7 +233,7 @@ in the type header is a special constant which does not point to any internal
 allocation. As a result, the data header and compressed data is stored entirely
 in the external file - unlike RegionFile, where the external file is just the compressed data.
 
-The external file is named `chunkX.chunkZ-typeId.mcsle`, where `chunkX` and 
+The external file is named `chunkX.chunkZ-typeId.sfe`, where `chunkX` and 
 `chunkZ` are the absolute chunk coordinates, and `typeId` is the id of the 
 data type.
 
