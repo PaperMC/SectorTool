@@ -1085,23 +1085,27 @@ public final class SectorFile implements Closeable {
         return location != ABSENT_LOCATION;
     }
 
-    public DataInputStream read(final BufferChoices scopedBufferChoices, final int localX, final int localZ, final int type, final int readFlags) throws IOException {
+    public static record SectorFileInput(DataInputStream data, boolean external) {}
+
+    private static final SectorFileInput NULL_DATA = new SectorFileInput(null, false);
+
+    public SectorFileInput read(final BufferChoices scopedBufferChoices, final int localX, final int localZ, final int type, final int readFlags) throws IOException {
         return this.read(scopedBufferChoices, scopedBufferChoices.t1m().acquireDirectBuffer(), localX, localZ, type, readFlags);
     }
 
-    private DataInputStream tryRecalculate(final String reason, final BufferChoices scopedBufferChoices, final ByteBuffer buffer, final int localX, final int localZ, final int type, final int readFlags) throws IOException {
+    private SectorFileInput tryRecalculate(final String reason, final BufferChoices scopedBufferChoices, final ByteBuffer buffer, final int localX, final int localZ, final int type, final int readFlags) throws IOException {
         LOGGER.error("File '" + this.file.getAbsolutePath() + "' has error at data for type " + this.debugType(type) + " located at " + this.getAbsoluteCoordinate(getIndex(localX, localZ)) + ": " + reason);
         // attribute error to bad header data, which we can re-calculate and re-try
         if (this.readOnly) {
             // cannot re-calculate, so we can only return null
-            return null;
+            return NULL_DATA;
         }
         this.recalculateFile(scopedBufferChoices, 0);
         // recalculate ensures valid data, so there will be no recursion
         return this.read(scopedBufferChoices, buffer, localX, localZ, type, readFlags);
     }
 
-    private DataInputStream read(final BufferChoices scopedBufferChoices, final ByteBuffer buffer, final int localX, final int localZ, final int type, final int readFlags) throws IOException {
+    private SectorFileInput read(final BufferChoices scopedBufferChoices, final ByteBuffer buffer, final int localX, final int localZ, final int type, final int readFlags) throws IOException {
         if (localX < 0 || localX > SECTION_MASK) {
             throw new IllegalArgumentException("X-coordinate out of range");
         }
@@ -1120,7 +1124,7 @@ public final class SectorFile implements Closeable {
 
         if (typeHeader == null) {
             this.checkReadOnlyHeader(type);
-            return null;
+            return NULL_DATA;
         }
 
         final int index = getIndex(localX, localZ);
@@ -1128,7 +1132,7 @@ public final class SectorFile implements Closeable {
         final int location = typeHeader.locations[index];
 
         if (location == ABSENT_LOCATION) {
-            return null;
+            return NULL_DATA;
         }
 
         final boolean external = location == EXTERNAL_ALLOCATION_LOCATION;
@@ -1207,7 +1211,7 @@ public final class SectorFile implements Closeable {
             LOGGER.error("File '" + this.file.getAbsolutePath() + "' has unrecognized compression type for data type " + this.debugType(type) + " located at " + this.getAbsoluteCoordinate(index));
             // recalculate will not clobber data types if the compression is unrecognized, so we can only return null here
             rawIn.close();
-            return null;
+            return NULL_DATA;
         }
 
         if (!external && (readFlags & READ_FLAG_CHECK_INTERNAL_DATA_HASH) != 0) {
@@ -1224,7 +1228,7 @@ public final class SectorFile implements Closeable {
             }
         }
 
-        return new DataInputStream(compressionType.createInput(scopedBufferChoices, rawIn));
+        return new SectorFileInput(new DataInputStream(compressionType.createInput(scopedBufferChoices, rawIn)), external);
     }
 
     public boolean delete(final BufferChoices unscopedBufferChoices, final int localX, final int localZ, final int type) throws IOException {

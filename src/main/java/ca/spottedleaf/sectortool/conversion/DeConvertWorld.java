@@ -129,7 +129,7 @@ public final class DeConvertWorld {
                             final int chunkZ = ((i >>> 5) & 31);
 
                             try (final BufferChoices readChoices = unscopedBufferChoices.scope();
-                                 final DataInputStream is = inputFile.read(readChoices, chunkX, chunkZ, type.getNewId(), SectorFile.FULL_VALIDATION_FLAGS);) {
+                                 final DataInputStream is = inputFile.read(readChoices, chunkX, chunkZ, type.getNewId(), SectorFile.FULL_VALIDATION_FLAGS).data();) {
 
                                 if (is == null) {
                                     regionFile.delete(chunkX, chunkZ, unscopedBufferChoices);

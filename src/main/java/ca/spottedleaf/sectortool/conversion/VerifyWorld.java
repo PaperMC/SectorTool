@@ -158,7 +158,7 @@ public final class VerifyWorld {
                             }
 
                             try (final BufferChoices sectorReadScope = regionReadScope.scope();) {
-                                final DataInputStream is = outputFile.read(sectorReadScope, chunkX, chunkZ, type.getNewId(), SectorFile.FULL_VALIDATION_FLAGS);
+                                final DataInputStream is = outputFile.read(sectorReadScope, chunkX, chunkZ, type.getNewId(), SectorFile.FULL_VALIDATION_FLAGS).data();
 
                                 if (is == null) {
                                     throw new IOException("Does not exist on sector file");

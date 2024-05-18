@@ -76,7 +76,7 @@ public final class FuzzProfilingTest {
 
     private static byte[] doRead(final SectorFile sectorFile, final int x, final int z, final int type) {
         try (final BufferChoices scopedBufferChoices = BUFFER_CHOICES.scope();
-             final DataInputStream in = sectorFile.read(scopedBufferChoices, x & SectorFile.SECTION_MASK, z & SectorFile.SECTION_MASK, type, SectorFile.FULL_VALIDATION_FLAGS);) {
+             final DataInputStream in = sectorFile.read(scopedBufferChoices, x & SectorFile.SECTION_MASK, z & SectorFile.SECTION_MASK, type, SectorFile.FULL_VALIDATION_FLAGS).data();) {
 
             return in == null ? null : in.readAllBytes();
         } catch (final Exception ex) {
