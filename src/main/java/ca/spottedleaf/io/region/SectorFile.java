@@ -1609,9 +1609,7 @@ public final class SectorFile implements Closeable {
             return;
         }
         if (!this.readOnly) {
-            if (this.sync) {
-                this.channel.force(true);
-            }
+            this.channel.force(true);
         }
     }
 
