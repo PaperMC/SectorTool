@@ -106,4 +106,24 @@ public abstract class SectorFileCompressionType {
     public static SectorFileCompressionType getById(final int id) {
         return BY_ID.get(id);
     }
+
+    public static SectorFileCompressionType fromRegionFile(final int id) {
+        switch (id) {
+            case 1: { // GZIP
+                return SectorFileCompressionType.GZIP;
+            }
+            case 2: { // DEFLATE
+                return SectorFileCompressionType.DEFLATE;
+            }
+            case 3: { // NONE
+                return SectorFileCompressionType.NONE;
+            }
+            case 4: { // LZ4
+                return SectorFileCompressionType.LZ4;
+            }
+            default: {
+                throw new IllegalArgumentException();
+            }
+        }
+    }
 }

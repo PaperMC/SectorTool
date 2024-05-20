@@ -98,9 +98,15 @@ The compression type to use on the new SectorFiles. Values:
 * NONE (id = 3)
 * LZ4 (id = 4)
 * ZSTD (id = 5)
+* COPY (id = -1)
 
 DEFLATE (id = 2) is the current default. LZ4 (id = 4) is fast but not space 
 efficient. ZSTD (id = 5) is fast and slightly less space efficient than DEFLATE.
+
+The COPY compression type will copy the compressed data from the source 
+RegionFiles. Note that the COPY compression type will not perform 
+decompression/recompression, unlike the rest of the compression options, 
+which should greatly reduce CPU load.
 
 
 ### Conversion from SectorFile to RegionFile (Deconversion)

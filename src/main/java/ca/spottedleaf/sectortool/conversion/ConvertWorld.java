@@ -31,6 +31,8 @@ public final class ConvertWorld {
     public static final String INPUT_PROPERTY = "input";
     public static final String TYPE_OUTPUT_PROPERTY = "compress";
 
+    public static final int COMPRESSION_TYPE_COPY_ID = -1;
+
     private static ExecutorService createExecutors() {
         return Executors.newFixedThreadPool(Main.THREADS, new ThreadFactory() {
             private final AtomicInteger idGenerator = new AtomicInteger();
@@ -62,6 +64,7 @@ public final class ConvertWorld {
     private static void submitToExecutor(final ExecutorService executor, final File dimDirectory, final String regionName,
                                          final SectorFileCompressionType compressionType, final BufferChoices unscopedBufferChoices,
                                          final AtomicInteger concurrentTracker, final Thread wakeup, final int threshold) {
+        final boolean raw = compressionType == null;
         // old format is r.<x>.<z>.mca
 
         final String[] coords = regionName.substring(2, regionName.length() - RegionFile.ANVIL_EXTENSION.length()).split("\\.");
@@ -85,7 +88,7 @@ public final class ConvertWorld {
         final SectorFile outputFile;
         try {
             outputFile = new SectorFile(
-                    output, sectionX, sectionZ, compressionType, unscopedBufferChoices,
+                    output, sectionX, sectionZ, raw ? SectorFileCompressionType.NONE : compressionType, unscopedBufferChoices,
                     MinecraftRegionFileType.getTranslationTable(),
                     0
             );
@@ -124,6 +127,19 @@ public final class ConvertWorld {
             @Override
             public void run() {
                 try (final BufferChoices readScope = unscopedBufferChoices.scope()) {
+                    for (final RegionFile regionFile : byId.values()) {
+                        try {
+                            regionFile.fillRaw(readScope);
+                        } catch (final IOException ex) {
+                            synchronized (System.err) {
+                                System.err.println("Failed to read raw from regionfile " + regionFile.file.getAbsolutePath());
+                                ex.printStackTrace(System.err);
+                            }
+                        }
+                    }
+                }
+
+                try (final BufferChoices readScope = unscopedBufferChoices.scope()) {
                     final RegionFile.CustomByteArrayOutputStream decompressed = new RegionFile.CustomByteArrayOutputStream(readScope.t1m().acquireJavaBuffer());
 
                     for (int i = 0; i < 32 * 32; ++i) {
@@ -138,9 +154,9 @@ public final class ConvertWorld {
 
                             decompressed.reset();
 
-                            boolean read = false;
+                            int read = -1;
                             try {
-                                read = regionFile.read(chunkX, chunkZ, readScope, decompressed);
+                                read = regionFile.read(chunkX, chunkZ, readScope, decompressed, raw);
                             } catch (final IOException ex) {
                                 synchronized (System.err) {
                                     System.err.println(
@@ -150,13 +166,15 @@ public final class ConvertWorld {
                                 }
                             }
 
-                            if (!read) {
+                            if (read < 0) {
                                 continue;
                             }
 
                             try (final BufferChoices writeScope = readScope.scope();) {
                                final SectorFile.SectorFileOutput output = outputFile.write(
-                                       writeScope, chunkX, chunkZ, type.getNewId(), null, 0
+                                       writeScope, chunkX, chunkZ, type.getNewId(),
+                                       raw ? SectorFileCompressionType.fromRegionFile(read) : null,
+                                       (raw ? SectorFile.WRITE_FLAG_RAW : 0)
                                );
                                try {
                                    decompressed.writeTo(output.outputStream());
@@ -216,8 +234,9 @@ public final class ConvertWorld {
             return;
         }
 
-        final SectorFileCompressionType compressionType = SectorFileCompressionType.getById(Integer.getInteger(TYPE_OUTPUT_PROPERTY, -1));
-        if (compressionType == null) {
+        final int compressionTypeId = Integer.getInteger(TYPE_OUTPUT_PROPERTY, -1);
+        final SectorFileCompressionType compressionType = SectorFileCompressionType.getById(compressionTypeId);
+        if (compressionType == null && compressionTypeId != COMPRESSION_TYPE_COPY_ID) {
             System.err.println("Specified compression type is absent (-D" + TYPE_OUTPUT_PROPERTY + "=<id>) or invalid");
             System.err.println("Select one from: 1 (GZIP), 2 (DEFLATE), 3 (NONE), 4 (LZ4), 5 (ZSTD)");
             return;

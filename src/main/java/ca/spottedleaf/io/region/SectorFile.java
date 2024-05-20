@@ -108,7 +108,7 @@ public final class SectorFile implements Closeable {
         public final int[] typeHeaderOffsets = new int[MAX_TYPES];
 
         public FileHeader() {
-            if (ABSENT_HEADER_XXHASH64 != 0L || ABSENT_TYPE_HEADER_OFFSET != 0) {
+            if (ABSENT_HEADER_XXHASH64 != 0L || ABSENT_TYPE_HEADER_OFFSET != 0) { // arrays default initialise to 0
                 this.reset();
             }
         }
@@ -896,7 +896,7 @@ public final class SectorFile implements Closeable {
                 // note: only the type headers can bypass the max limit, as the max limit is determined by SECTOR_OFFSET_BITS
                 //       but the type offset is full 31 bits
                 if (typeHeaderOffset < 0 || !this.sectorAllocator.tryAllocateDirect(typeHeaderOffset, TYPE_HEADER_SECTORS, true)) {
-                    LOGGER.error("File '" + this.file.getAbsolutePath() + "' has bad or overlapping offset for type " + this.debugType(i) + ": " + typeHeaderOffset);
+                    LOGGER.error("File '" + this.file.getAbsolutePath() + "' has bad or overlapping offset for type header " + this.debugType(i) + ": " + typeHeaderOffset);
                     needsRecalculation = true;
                     continue;
                 }
@@ -1283,6 +1283,8 @@ public final class SectorFile implements Closeable {
 
     // performs a sync as if the sync flag is used for creating the sectorfile
     public static final int WRITE_FLAG_SYNC         = 1 << 0;
+    // avoid compressing data, but store target compression type (use if the data is already compressed)
+    public static final int WRITE_FLAG_RAW          = 1 << 1;
 
     public static record SectorFileOutput(
             /* Must run save (before close()) to cause the data to be written to the file, close() will not do this */
@@ -1306,7 +1308,7 @@ public final class SectorFile implements Closeable {
         final SectorFileOutputStream output = new SectorFileOutputStream(
                 scopedBufferChoices, localX, localZ, type, useCompressionType, writeFlags
         );
-        final OutputStream compressedOut = useCompressionType.createOutput(scopedBufferChoices, output);
+        final OutputStream compressedOut = (writeFlags & WRITE_FLAG_RAW) != 0 ? output : useCompressionType.createOutput(scopedBufferChoices, output);
 
         return new SectorFileOutput(output, new DataOutputStream(compressedOut));
     }
@@ -1489,6 +1491,10 @@ public final class SectorFile implements Closeable {
             this.writeFlags = writeFlags;
         }
 
+        public int getTotalCompressedSize() {
+            return this.totalCompressedSize + (this.buffer == null ? 0 : this.buffer.position());
+        }
+
         @Override
         protected ByteBuffer flush(final ByteBuffer current) throws IOException {
             if (this.externalFile == null && current.hasRemaining()) {
@@ -1556,7 +1562,7 @@ public final class SectorFile implements Closeable {
                 buffer.flip();
 
                 final long dataHash = XXHASH64.hash(
-                        this.buffer, DataHeader.DATA_HEADER_LENGTH, buffer.remaining() - DataHeader.DATA_HEADER_LENGTH,
+                        buffer, DataHeader.DATA_HEADER_LENGTH, buffer.remaining() - DataHeader.DATA_HEADER_LENGTH,
                         XXHASH_SEED
                 );
 
@@ -1609,7 +1615,9 @@ public final class SectorFile implements Closeable {
             return;
         }
         if (!this.readOnly) {
-            this.channel.force(true);
+            if (this.sync) {
+                this.channel.force(true);
+            }
         }
     }
 

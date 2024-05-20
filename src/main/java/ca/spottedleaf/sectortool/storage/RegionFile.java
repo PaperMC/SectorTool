@@ -64,6 +64,8 @@ public final class RegionFile implements Closeable {
         this.sectorAllocator.allocate(2, false);
     }
 
+    private ByteBuffer raw;
+
     public RegionFile(final File file, final int sectionX, final int sectionZ, final BufferChoices unscopedBufferChoices,
                       final boolean readOnly) throws IOException {
         this.file = file;
@@ -114,6 +116,69 @@ public final class RegionFile implements Closeable {
                 }
             }
         }
+    }
+
+    public void fillRaw(final BufferChoices unscopedBufferChoices) throws IOException {
+        if (this.raw != null) {
+            throw new IllegalStateException("Already filled raw");
+        }
+        if (!this.readOnly) {
+            throw new IllegalStateException("Cannot fill raw in write mode");
+        }
+
+        final long length = Math.max(0L, this.channel.size());
+
+        final ByteBuffer raw = ByteBuffer.allocate((int)length);
+
+        try (final BufferChoices scopedChoices = unscopedBufferChoices.scope()) {
+            final ByteBuffer buffer = scopedChoices.t1m().acquireDirectBuffer();
+
+            long offset = 0L;
+
+            while (this.channel.read(buffer, offset) >= 0) {
+                final int read = buffer.position();
+
+                buffer.flip();
+
+                raw.put(buffer);
+
+                buffer.limit(buffer.capacity());
+                buffer.position(0);
+
+                offset += read;
+            }
+        }
+
+        raw.flip();
+
+        this.raw = raw;
+    }
+
+    public int readRaw(final ByteBuffer dst, final long position) {
+        if (position < 0) {
+            throw new IllegalArgumentException();
+        }
+        if (position >= (long)Integer.MAX_VALUE) {
+            return -1;
+        }
+
+        final int tryRead = dst.remaining();
+        final int remainingRaw = this.raw.limit() - (int)position;
+
+        if (tryRead <= 0) {
+            return 0;
+        }
+
+        if (remainingRaw <= 0) {
+            return -1;
+        }
+
+        final int toRead = Math.min(tryRead, remainingRaw);
+
+        dst.put(dst.position(), this.raw, (int)position, toRead);
+        dst.position(dst.position() + toRead);
+
+        return toRead;
     }
 
     private static int getLocationSize(final int location) {
@@ -211,11 +276,16 @@ public final class RegionFile implements Closeable {
     }
 
     public boolean read(final int x, final int z, final BufferChoices unscopedBufferChoices, final RegionFile.CustomByteArrayOutputStream decompressed) throws IOException {
+        return this.read(x, z, unscopedBufferChoices, decompressed, false) >= 0;
+    }
+
+    public int read(final int x, final int z, final BufferChoices unscopedBufferChoices, final RegionFile.CustomByteArrayOutputStream decompressed,
+                    final boolean raw) throws IOException {
         final int location = this.getLocation(x, z);
 
         if (location == 0) {
             // absent
-            return false;
+            return -1;
         }
 
         try (final BufferChoices scopedBufferChoices = unscopedBufferChoices.scope()) {
@@ -227,7 +297,11 @@ public final class RegionFile implements Closeable {
             if (fsize == (255 * SECTOR_SIZE)) {
                 // support for forge/spigot style oversized chunk format (pre 1.15)
                 final ByteBuffer extendedLen = ByteBuffer.allocate(INT_SIZE);
-                this.channel.read(extendedLen, foff);
+                if (this.raw == null) {
+                    this.channel.read(extendedLen, foff);
+                } else {
+                    this.readRaw(extendedLen, foff);
+                }
                 fsize = extendedLen.getInt(0);
                 if (fsize > compressedData.capacity()) {
                     // do not use direct here, the read() will allocate one and free it immediately - which is something
@@ -240,7 +314,7 @@ public final class RegionFile implements Closeable {
             compressedData.limit(fsize);
             compressedData.position(0);
 
-            int r = this.channel.read(compressedData, foff);
+            int r = this.raw != null ? this.readRaw(compressedData, foff) : this.channel.read(compressedData, foff);
             if (r < DATA_METADATA_SIZE) {
                 throw new IOException("Truncated data");
             }
@@ -263,7 +337,7 @@ public final class RegionFile implements Closeable {
                 final File external = this.getExternalFile(x, z);
                 if (!external.isFile()) {
                     System.err.println("Externally stored chunk data '" + external.getAbsolutePath() + "' does not exist");
-                    return false;
+                    return -1;
                 }
 
                 rawIn = new BufferedFileChannelInputStream(scopedBufferChoices.t16k().acquireDirectBuffer(), this.getExternalFile(x, z));
@@ -272,27 +346,35 @@ public final class RegionFile implements Closeable {
             }
 
             InputStream decompress = null;
+
             try {
-                switch (type) {
-                    case 1: { // GZIP
-                        decompress = new GZIPInputStream(rawIn);
-                        break;
+                if (!raw) {
+                    switch (type) {
+                        case 1: { // GZIP
+                            decompress = new GZIPInputStream(rawIn);
+                            break;
+                        }
+                        case 2: { // DEFLATE
+                            decompress = new InflaterInputStream(rawIn);
+                            break;
+                        }
+                        case 3: { // NONE
+                            decompress = rawIn;
+                            break;
+                        }
+                        case 4: { // LZ4
+                            decompress = new LZ4BlockInputStream(rawIn);
+                            break;
+                        }
+                        default: {
+                            throw new IOException("Unknown type: " + type);
+                        }
                     }
-                    case 2: { // DEFLATE
-                        decompress = new InflaterInputStream(rawIn);
-                        break;
-                    }
-                    case 3: { // NONE
-                        decompress = rawIn;
-                        break;
-                    }
-                    case 4: { // LZ4
-                        decompress = new LZ4BlockInputStream(rawIn);
-                        break;
-                    }
-                    default: {
+                } else {
+                    if (type <= 0 || type > 4) {
                         throw new IOException("Unknown type: " + type);
                     }
+                    decompress = rawIn;
                 }
 
                 final byte[] tmp = scopedBufferChoices.t16k().acquireJavaBuffer();
@@ -301,7 +383,7 @@ public final class RegionFile implements Closeable {
                     decompressed.write(tmp, 0, r);
                 }
 
-                return true;
+                return type;
             } finally {
                 if (decompress != null) {
                     decompress.close();
