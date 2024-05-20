@@ -1475,7 +1475,7 @@ public final class SectorFile implements Closeable {
             super(scopedBufferChoices.t1m().acquireDirectBuffer());
             // we use a lower limit than capacity to force flush() to be invoked before
             // the maximum internal size
-            this.buffer.limit((MAX_NORMAL_SECTOR_LENGTH << SECTOR_SHIFT) | (SECTOR_SIZE - 1));
+            this.buffer.limit(((MAX_NORMAL_SECTOR_LENGTH - 1) << SECTOR_SHIFT) + 1);
             // make space for the header
             for (int i = 0; i < DataHeader.DATA_HEADER_LENGTH; ++i) {
                 this.buffer.put(i, (byte)0);
