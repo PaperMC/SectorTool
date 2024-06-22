@@ -204,7 +204,7 @@ public final class RegionFile implements Closeable {
         return new File(this.file.getParentFile(), "c." + cx + "." + cz + ".mcc");
     }
 
-    public static record AllocationStats(long fileSectors, long allocatedSectors, long alternateAllocatedSectors, long dataSizeBytes, int errors) {}
+    public static record AllocationStats(long fileSectors, long allocatedSectors, long alternateAllocatedSectors, long alternateAllocatedSectorsPadded, long dataSizeBytes, int errors) {}
 
     private int[] getHeaderSorted() {
         final IntArrayList list = new IntArrayList(this.header.length);
@@ -218,11 +218,12 @@ public final class RegionFile implements Closeable {
     }
 
     public AllocationStats computeStats(final BufferChoices unscopedBufferChoices, final int alternateSectorSize,
+                                        final int alternateHeaderSectors,
                                         final int alternateOverhead) throws IOException {
         final long fileSectors = (this.file.length() + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT;
 
         long allocatedSectors = Math.min(fileSectors, 2L);
-        long alternateAllocatedSectors = 0L;
+        long alternateAllocatedSectors = (long)alternateHeaderSectors;
         int errors = 0;
         long dataSize = 0L;
 
@@ -272,7 +273,10 @@ public final class RegionFile implements Closeable {
             }
         }
 
-        return new AllocationStats(fileSectors, allocatedSectors, alternateAllocatedSectors, dataSize, errors);
+        final long diff = SECTOR_SIZE / alternateSectorSize;
+        final long alternateAllocatedSectorsPadded = diff <= 1L ? alternateAllocatedSectors : ((alternateAllocatedSectors + (diff - 1L)) / diff) * diff;
+
+        return new AllocationStats(fileSectors, allocatedSectors, alternateAllocatedSectors, alternateAllocatedSectorsPadded, dataSize, errors);
     }
 
     public boolean read(final int x, final int z, final BufferChoices unscopedBufferChoices, final RegionFile.CustomByteArrayOutputStream decompressed) throws IOException {
@@ -324,6 +328,7 @@ public final class RegionFile implements Closeable {
             final int length = compressedData.getInt(0) - BYTE_SIZE;
             byte type = compressedData.get(0 + INT_SIZE);
             compressedData.position(0 + INT_SIZE + BYTE_SIZE);
+            compressedData.limit(compressedData.getInt(0) + INT_SIZE);
 
             if (compressedData.remaining() < length) {
                 throw new EOFException("Truncated data");

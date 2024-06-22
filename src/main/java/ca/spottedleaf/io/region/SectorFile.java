@@ -236,8 +236,8 @@ public final class SectorFile implements Closeable {
 
     private static final int MAX_INTERNAL_ALLOCATION_BYTES = SECTOR_SIZE * (1 << SECTOR_LENGTH_BITS);
 
-    private static final int TYPE_HEADER_OFFSET_COUNT = SECTION_SIZE * SECTION_SIZE; // total number of offsets per type header
-    private static final int TYPE_HEADER_SECTORS = (TYPE_HEADER_OFFSET_COUNT * INT_SIZE) / SECTOR_SIZE; // total number of sectors used per type header
+    public static final int TYPE_HEADER_OFFSET_COUNT = SECTION_SIZE * SECTION_SIZE; // total number of offsets per type header
+    public static final int TYPE_HEADER_SECTORS = (TYPE_HEADER_OFFSET_COUNT * INT_SIZE) / SECTOR_SIZE; // total number of sectors used per type header
 
     // header location is just raw sector number
     // so, we point to the header itself to indicate absence
@@ -329,9 +329,8 @@ public final class SectorFile implements Closeable {
     private final Int2ObjectMap<String> typeTranslationTable;
     private final FileHeader fileHeader = new FileHeader();
 
-    private void checkReadOnlyHeader(final int type) {
-        // we want to error when a type is used which is not mapped, but we can only store into typeHeaders in write mode
-        // as sometimes we may need to create absent type headers
+    private void checkHeaderExists(final int type) {
+        // we want to error when a type is used which is not mapped
         if (this.typeTranslationTable.get(type) == null) {
             throw new IllegalArgumentException("Unknown type " + type);
         }
@@ -381,44 +380,33 @@ public final class SectorFile implements Closeable {
             this.readFileHeader(unscopedBufferChoices);
         }
 
-        boolean modifiedFileHeader = false;
+        // validate types
+        for (final IntIterator iterator = typeTranslationTable.keySet().iterator(); iterator.hasNext(); ) {
+            final int type = iterator.nextInt();
 
+            if (type < 0 || type >= MAX_TYPES) {
+                throw new IllegalStateException("Type translation table contains illegal type: " + type);
+            }
+        }
+    }
+
+    private TypeHeader createTypeHeader(final int type, final BufferChoices unscopedBufferChoices) throws IOException {
         try (final BufferChoices scopedBufferChoices = unscopedBufferChoices.scope()) {
             final ByteBuffer ioBuffer = scopedBufferChoices.t16k().acquireDirectBuffer();
-
-            // make sure we have the type headers required allocated
-            for (final IntIterator iterator = typeTranslationTable.keySet().iterator(); iterator.hasNext(); ) {
-                final int type = iterator.nextInt();
-
-                if (type < 0 || type >= MAX_TYPES) {
-                    throw new IllegalStateException("Type translation table contains illegal type: " + type);
-                }
-
-                final TypeHeader headerData = this.typeHeaders.get(type);
-                if (headerData != null || readOnly) {
-                    // allocated or unable to allocate
-                    continue;
-                }
-
-                modifiedFileHeader = true;
-
-                // need to allocate space for new type header
-                final int offset = this.sectorAllocator.allocate(TYPE_HEADER_SECTORS, false); // in sectors
-                if (offset <= 0) {
-                    throw new IllegalStateException("Cannot allocate space for header " + this.debugType(type) + ":" + offset);
-                }
-
-                this.fileHeader.typeHeaderOffsets[type] = offset;
-                // hash will be computed by writeTypeHeader
-                this.typeHeaders.put(type, new TypeHeader());
-
-                this.writeTypeHeader(ioBuffer, type, true, false);
+            final int offset = this.sectorAllocator.allocate(TYPE_HEADER_SECTORS, false); // in sectors
+            if (offset <= 0) {
+                throw new IllegalStateException("Cannot allocate space for header " + this.debugType(type) + ":" + offset);
             }
 
-            // modified the file header, so write it back
-            if (modifiedFileHeader) {
-                this.writeFileHeader(ioBuffer);
-            }
+            final TypeHeader ret = new TypeHeader();
+
+            this.fileHeader.typeHeaderOffsets[type] = offset;
+            // hash will be computed by writeTypeHeader
+            this.typeHeaders.put(type, ret);
+
+            this.writeTypeHeader(ioBuffer, type, true, true);
+
+            return ret;
         }
     }
 
@@ -700,6 +688,18 @@ public final class SectorFile implements Closeable {
             final int type = entry.getIntKey();
             final TentativeTypeHeader tentativeTypeHeader = entry.getValue();
 
+            boolean hasData = false;
+            for (final int location : tentativeTypeHeader.typeHeader.locations) {
+                if (location != ABSENT_LOCATION) {
+                    hasData = true;
+                    break;
+                }
+            }
+
+            if (!hasData) {
+                continue;
+            }
+
             final int sectorOffset = newSectorAllocation.allocate(TYPE_HEADER_SECTORS, false);
             if (sectorOffset < 0) {
                 throw new IllegalStateException("Failed to allocate type header");
@@ -717,10 +717,11 @@ public final class SectorFile implements Closeable {
 
         boolean changes = false;
 
-        for (final Iterator<Int2ObjectMap.Entry<TypeHeader>> iterator = newHeaders.int2ObjectEntrySet().fastIterator(); iterator.hasNext();) {
-            final Int2ObjectMap.Entry<TypeHeader> entry = iterator.next();
+        // make sure to use the tentative type headers, in case the tentative header was not allocated due to being empty
+        for (final Iterator<Int2ObjectMap.Entry<TentativeTypeHeader>> iterator = newTypeHeaders.int2ObjectEntrySet().fastIterator(); iterator.hasNext();) {
+            final Int2ObjectMap.Entry<TentativeTypeHeader> entry = iterator.next();
             final int type = entry.getIntKey();
-            final TypeHeader newTypeHeader = entry.getValue();
+            final TypeHeader newTypeHeader = entry.getValue().typeHeader;
             final TypeHeader oldTypeHeader = this.typeHeaders.get(type);
 
             boolean hasChanges;
@@ -1075,7 +1076,7 @@ public final class SectorFile implements Closeable {
         final TypeHeader typeHeader = this.typeHeaders.get(type);
 
         if (typeHeader == null) {
-            this.checkReadOnlyHeader(type);
+            this.checkHeaderExists(type);
             return false;
         }
 
@@ -1123,7 +1124,7 @@ public final class SectorFile implements Closeable {
         final TypeHeader typeHeader = this.typeHeaders.get(type);
 
         if (typeHeader == null) {
-            this.checkReadOnlyHeader(type);
+            this.checkHeaderExists(type);
             return NULL_DATA;
         }
 
@@ -1246,7 +1247,7 @@ public final class SectorFile implements Closeable {
         final TypeHeader typeHeader = this.typeHeaders.get(type);
 
         if (typeHeader == null) {
-            this.checkReadOnlyHeader(type);
+            this.checkHeaderExists(type);
             return false;
         }
 
@@ -1299,7 +1300,7 @@ public final class SectorFile implements Closeable {
             throw new UnsupportedOperationException("Sectorfile is read-only");
         }
 
-        if (this.typeHeaders.get(type) == null) {
+        if (!this.typeHeaders.containsKey(type) && !this.typeTranslationTable.containsKey(type)) {
             throw new IllegalArgumentException("Unknown type " + type);
         }
 
@@ -1553,8 +1554,17 @@ public final class SectorFile implements Closeable {
             return current;
         }
 
+        private void checkAndCreateTypeHeader() throws IOException {
+            if (SectorFile.this.typeHeaders.get(this.type) == null) {
+                SectorFile.this.createTypeHeader(this.type, this.scopedBufferChoices);
+            }
+        }
+
         // assume flush() is called before this
         private void save() throws IOException {
+            // lazily create type header
+            this.checkAndCreateTypeHeader();
+
             if (this.externalFile == null) {
                 // avoid clobbering buffer positions/limits
                 final ByteBuffer buffer = this.buffer.duplicate();

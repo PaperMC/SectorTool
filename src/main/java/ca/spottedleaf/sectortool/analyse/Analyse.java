@@ -60,6 +60,7 @@ public final class Analyse {
         public long fileSectors = 0L;
         public long allocatedSectors = 0L;
         public long alternateAllocatedSectors = 0L;
+        public long alternateAllocatedSectorsPadded = 0L;
         public long dataSizeBytes = 0L;
         public long errors = 0L;
 
@@ -67,6 +68,7 @@ public final class Analyse {
             this.fileSectors += stats.fileSectors();
             this.allocatedSectors += stats.allocatedSectors();
             this.alternateAllocatedSectors += stats.alternateAllocatedSectors();
+            this.alternateAllocatedSectorsPadded += stats.alternateAllocatedSectorsPadded();
             this.dataSizeBytes += stats.dataSizeBytes();
             this.errors += (long)stats.errors();
         }
@@ -75,6 +77,7 @@ public final class Analyse {
             System.out.println("File sectors: " + this.fileSectors);
             System.out.println("Allocated sectors: " + this.allocatedSectors);
             System.out.println("Alternate allocated sectors: " + this.alternateAllocatedSectors);
+            System.out.println("Alternate allocated sectors padded: " + this.alternateAllocatedSectorsPadded);
             System.out.println("Total data size: " + this.dataSizeBytes);
             System.out.println("Errors: " + this.errors);
         }
@@ -133,7 +136,9 @@ public final class Analyse {
 
                         final RegionFile.AllocationStats stats;
                         try {
-                            stats = regionFile.computeStats(unscopedBufferChoices, SectorFile.SECTOR_SIZE, SectorFile.DataHeader.DATA_HEADER_LENGTH);
+                            stats = regionFile.computeStats(unscopedBufferChoices, SectorFile.SECTOR_SIZE,
+                                    SectorFile.TYPE_HEADER_SECTORS + SectorFile.FileHeader.FILE_HEADER_TOTAL_SECTORS,
+                                    SectorFile.DataHeader.DATA_HEADER_LENGTH);
                         } catch (final IOException ex) {
                             synchronized (System.err) {
                                 System.err.println("Failed to read stats from regionfile '" + regionFile.file.getAbsolutePath() + "': ");
